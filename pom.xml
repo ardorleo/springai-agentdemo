@@ -67,7 +67,9 @@
         <java.version>17</java.version>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <spring-ai.version>2.0.0</spring-ai.version>
+        <!-- 2.0.1 修了「Reactor 取消不关闭底层流」（2.0.0 取消后连接仍占用，重试会叠加）；
+             同时按 index 合并工具调用分片。升级需同步：springai-code-tui 里两个强绑定的 SDK client 版本。 -->
+        <spring-ai.version>2.0.1</spring-ai.version>
         <spring-boot.version>4.0.7</spring-boot.version>
         <!-- 社区项目 spring-ai-agent-utils（提供 SkillsTool 等），针对 Spring AI 2.0 -->
         <spring-ai-agent-utils.version>0.10.0</spring-ai-agent-utils.version>

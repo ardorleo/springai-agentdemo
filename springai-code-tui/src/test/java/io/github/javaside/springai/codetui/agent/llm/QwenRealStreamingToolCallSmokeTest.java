@@ -13,8 +13,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 千问真机冒烟（手动/验收用）：打真实百炼端点，走「流式 + 工具调用」——正是
- * ChunkMerger 空串 id 崩溃的复现路径（见 QwenSseNormalizingHttpClient）。
+ * 千问真机冒烟（手动/验收用）：打真实百炼端点，走「流式 + 工具调用」——即当年
+ * ChunkMerger 空串 id 崩溃的复现路径（Spring AI 2.0.1 已按 index 合并修复，
+ * 离线形状回归见 QwenChunkMergerHypothesisTest）。
  *
  * <p>默认跳过；配了 DASHSCOPE_API_KEY 才跑（会产生真实计费调用）：
  * {@code DASHSCOPE_API_KEY=... mvn -pl springai-code-tui test -Dtest=QwenRealStreamingToolCallSmokeTest}

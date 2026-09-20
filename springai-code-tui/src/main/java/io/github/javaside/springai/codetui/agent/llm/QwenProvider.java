@@ -68,22 +68,19 @@ public final class QwenProvider implements LlmProvider {
         }
         ChatModel m = chatModel;
         if (m == null) {
-            // 与智谱不同：千问不能直接用 OpenAIOkHttpClient.builder()——须在 HTTP 层插一个 SSE 归一化装饰器
-            // 修流式 tool_calls 空串 id 分片（见 QwenSseNormalizingHttpClient javadoc），而该 builder 不暴露
-            // httpClient 钩子，故走 ClientOptions + OpenAIClient(Async)Impl 手工装配（SDK 公开 API）。
-            // 超时同样两处都设：OkHttpClient（真正生效的 socket 超时）与 ClientOptions（SDK 记账）。
+            // 超时设在 SDK client 的 ClientOptions（见 OpenAiTimeouts）；baseUrl 恒非空（百炼兼容模式端点）。
+            // async client 供主 agent 流式、sync client 供子 agent 阻塞——两个都带超时。
+            // 此前这里手工装配 ClientOptions 只为插入 SSE 归一化装饰器（修 2.0.0 流式 tool_calls
+            // 空串 id 分片崩溃）；2.0.1 改为按 index 合并后原样分片即可正确合并，装饰器已删除，
+            // 故与 ZhipuProvider 同款装配（回归由 QwenChunkMergerHypothesisTest 守）。
             com.openai.core.Timeout timeout = OpenAiTimeouts.of(TIMEOUTS);
-            com.openai.core.http.HttpClient http = new QwenSseNormalizingHttpClient(
-                    com.openai.client.okhttp.OkHttpClient.builder().timeout(timeout).build());
-            com.openai.core.ClientOptions options = com.openai.core.ClientOptions.builder()
-                    .httpClient(http)
-                    .apiKey(apiKey)
-                    .baseUrl(baseUrl)
-                    .timeout(timeout)
-                    .build();
+            var syncClient = com.openai.client.okhttp.OpenAIOkHttpClient.builder()
+                    .apiKey(apiKey).baseUrl(baseUrl).timeout(timeout).build();
+            var asyncClient = com.openai.client.okhttp.OpenAIOkHttpClientAsync.builder()
+                    .apiKey(apiKey).baseUrl(baseUrl).timeout(timeout).build();
             m = OpenAiChatModel.builder()
-                    .openAiClient(new com.openai.client.OpenAIClientImpl(options))
-                    .openAiClientAsync(new com.openai.client.OpenAIClientAsyncImpl(options))
+                    .openAiClient(syncClient)
+                    .openAiClientAsync(asyncClient)
                     .options(OpenAiChatOptions.builder().model(defaultModel()).build())
                     .build();
             chatModel = m;
