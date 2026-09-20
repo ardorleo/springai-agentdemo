@@ -267,7 +267,10 @@ public final class InlineDisplay implements AutoCloseable {
                 return;
             }
             appendHome(printBatch);
-            printBatch.append("\u001b[1L").append(message).append("\u001b[K\n\r");
+            // 必须在正文之前清行：写满终端后光标处于右边界 pending-wrap 状态，
+            // 此时 EL 会在 Terminal.app 擦掉最后一个字符。先清再写，随后 CR/LF
+            // 取消 pending wrap 并显式换行，仍保持「一次 println = 一物理行」。
+            printBatch.append("\u001b[1L\u001b[K").append(message).append("\r\n");
             lastCursorX = 0;
             lastCursorY = 0;
         } finally {
