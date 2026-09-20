@@ -42,6 +42,42 @@ class VisionBudgetTest {
         assertTrue(b.open("turn-2").tryConsumeTurnSlot());
     }
 
+    /** 额度可由环境变量覆盖：截图循环密集的用户需要放宽，不该只能改代码。 */
+    @Test
+    void turnBudgetIsOverridableByEnvValue() {
+        assertEquals(40, VisionBudget.resolveBudget("40", VisionBudget.MAX_TOOL_TURN_DELIVERIES));
+        assertEquals(40, VisionBudget.resolveBudget("  40  ", VisionBudget.MAX_TOOL_TURN_DELIVERIES));
+        // 未设 / 空 / 非法 / 负数一律回落默认，绝不让一个手滑的环境变量把 TUI 带崩
+        assertEquals(VisionBudget.MAX_TOOL_TURN_DELIVERIES, VisionBudget.resolveBudget(null, VisionBudget.MAX_TOOL_TURN_DELIVERIES));
+        assertEquals(VisionBudget.MAX_TOOL_TURN_DELIVERIES, VisionBudget.resolveBudget("", VisionBudget.MAX_TOOL_TURN_DELIVERIES));
+        assertEquals(VisionBudget.MAX_TOOL_TURN_DELIVERIES, VisionBudget.resolveBudget("abc", VisionBudget.MAX_TOOL_TURN_DELIVERIES));
+        assertEquals(VisionBudget.MAX_TOOL_TURN_DELIVERIES, VisionBudget.resolveBudget("-5", VisionBudget.MAX_TOOL_TURN_DELIVERIES));
+    }
+
+    /** 覆盖值真的作用到会话：传 2 时第 3 次就没了。 */
+    @Test
+    void overriddenBudgetGovernsSession() {
+        VisionBudget b = new VisionBudget(2);
+        assertEquals(2, b.toolTurnDeliveries());
+        assertTrue(b.open("t").tryConsumeTurnSlot());
+        assertTrue(b.open("t").tryConsumeTurnSlot());
+        assertFalse(b.open("t").tryConsumeTurnSlot());
+    }
+
+    /**
+     * 工具执行期据此判断「现在 Read 也拿不回图」：取最近一次 open 的回合——工具调用总紧跟一次模型请求。
+     * 未跟踪过的回合恒 false（冷启动不该平白改掉 Read 的表示）。
+     */
+    @Test
+    void currentTurnExhaustedTracksMostRecentOpenedTurn() {
+        VisionBudget b = new VisionBudget(1);
+        assertFalse(b.currentTurnExhausted(), "还没开过回合 → 不该判定耗尽");
+        b.open("t1").tryConsumeTurnSlot();
+        assertTrue(b.currentTurnExhausted(), "t1 额度已尽");
+        b.open("t2");
+        assertFalse(b.currentTurnExhausted(), "换到 t2（额度未动）后不该沿用 t1 的结论");
+    }
+
     /** 计数表必须有界，否则长会话里它自己会变成泄漏。 */
     @Test
     void counterTableIsBounded() {

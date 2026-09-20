@@ -106,7 +106,7 @@ public final class ContextUsage {
         // 严格说单位是「张·次」（同一张图跨迭代重发计两次，与上限同一口径），面板上从简写作「张」。
         if (s.visionImages() > 0) {
             sink.accept(String.format("  视觉图片：本回合 %,d 张 · 约 %,d token（每回合上限 %d 张，不计入上方合计）",
-                    s.visionImages(), s.visionTokens(), VisionBudget.MAX_TURN_DELIVERIES));
+                    s.visionImages(), s.visionTokens(), VisionBudget.MAX_TOOL_TURN_DELIVERIES));
         }
         if (s.tokenThreshold() > 0) {
             // 压缩阈值按「会话消息」（不含系统提示词）判定——压缩删的也是消息，系统提示词不在其列。

@@ -44,8 +44,26 @@ public final class VisionMaterializingChatModel implements ChatModel {
 
     public static VisionMaterializingChatModel wrap(ChatModel delegate, Path root,
                                                      Predicate<String> supportsImage) {
+        return wrap(delegate, root, supportsImage, new VisionBudget());
+    }
+
+    /**
+     * 用<b>外部传入</b>的预算实例装配。
+     *
+     * <p>存在的理由：工具执行期（{@code MediaExternalizingCallback}）也要查同一个回合的额度，
+     * 才能在图读不回来时如实告诉模型。两侧各 new 一个 {@link VisionBudget} 的话，出站侧扣的额度
+     * 工具侧永远看不到，那条「额度已尽」的判断就恒为 false——正是本次要修的假话来源。
+     */
+    public static VisionMaterializingChatModel wrap(ChatModel delegate, Path root,
+                                                     Predicate<String> supportsImage,
+                                                     VisionBudget budget) {
         return new VisionMaterializingChatModel(
-                delegate, new VisionMaterializer(root, new ImagePreparer(), new VisionBudget()), supportsImage);
+                delegate, new VisionMaterializer(root, new ImagePreparer(), budget), supportsImage);
+    }
+
+    /** 供 {@code /context} 之外的调用方读取本实例的预算（测试与装配自检用）。 */
+    VisionMaterializer materializer() {
+        return materializer;
     }
 
     /** 上次兑现的统计（供 {@code /context} 单列视觉占用）。 */

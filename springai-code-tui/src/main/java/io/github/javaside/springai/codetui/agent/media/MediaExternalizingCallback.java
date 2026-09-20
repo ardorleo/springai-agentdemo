@@ -28,15 +28,29 @@ public final class MediaExternalizingCallback implements ToolCallback {
     private final MediaArtifactStore store;
     private final ToolResultMediaHandler handler;
     private final Path root;
+    /** 可空：视觉预算，用于在额度耗尽时如实告知模型「Read 也拿不回来」（见 represent 三参重载）。 */
+    private final VisionBudget visionBudget;
     /** MCP 图片的序号，仅用于合成可读文件名——同一页面的多次截图靠它区分。 */
     private int mcpImageSeq = 0;
 
     public MediaExternalizingCallback(ToolCallback delegate, MediaArtifactStore store,
                                       ToolResultMediaHandler handler, Path root) {
+        this(delegate, store, handler, root, null);
+    }
+
+    public MediaExternalizingCallback(ToolCallback delegate, MediaArtifactStore store,
+                                      ToolResultMediaHandler handler, Path root,
+                                      VisionBudget visionBudget) {
         this.delegate = delegate;
         this.store = store;
         this.handler = handler;
         this.root = root;
+        this.visionBudget = visionBudget;
+    }
+
+    /** 本回合视觉额度是否已耗尽；无预算来源（测试桩/旧装配）恒 false，行为与引入前一致。 */
+    private boolean turnExhausted() {
+        return visionBudget != null && visionBudget.currentTurnExhausted();
     }
 
     @Override public ToolDefinition getToolDefinition() { return delegate.getToolDefinition(); }
@@ -64,7 +78,7 @@ public final class MediaExternalizingCallback implements ToolCallback {
             for (McpMediaParser.MediaBlock mb : p.mediaBlocks()) {
                 try {
                     MediaArtifact a = store.put(mb.bytes(), mb.declaredMimeType(), synthesizeName(mb.bytes()));
-                    out.append(handler.represent(a, caps)).append('\n');
+                    out.append(handler.represent(a, caps, turnExhausted())).append('\n');
                 } catch (RuntimeException e) {
                     log.warn("媒体块外置失败，已降级为占位（未泄露字节）：{}", e.toString());  // 不打印内容
                     out.append("[media externalization failed; content omitted]").append('\n');
@@ -79,7 +93,7 @@ public final class MediaExternalizingCallback implements ToolCallback {
         Path original = resolveReadPath(toolInput);
         if (original != null && !MagicSniffer.isTextFile(original)) {
             MediaArtifact a = referenceExistingFile(original);
-            if (a != null) return handler.represent(a, caps);
+            if (a != null) return handler.represent(a, caps, turnExhausted());
         }
 
         // 2b) 越界但真实存在的非文本文件（项目外路径，如 ~/Downloads/x.png）：Read 越界时
@@ -92,7 +106,7 @@ public final class MediaExternalizingCallback implements ToolCallback {
             Path outside = resolveOutsideReadPath(toolInput);
             if (outside != null && !MagicSniffer.isTextFile(outside)) {
                 MediaArtifact a = copyIntoStore(outside);
-                if (a != null) return handler.represent(a, caps);
+                if (a != null) return handler.represent(a, caps, turnExhausted());
                 // 已确认是项目外二进制：外置失败必须 fail-closed，绝不能掉到 return raw。
                 // Read 的 PNG/PDF hexdump 往往通不过 BinarySniff，放行会重新泄漏原始字节。
                 return "[工具返回二进制文件，外置失败后内容已从会话移除]";

@@ -4,7 +4,7 @@ package io.github.javaside.springai.codetui.agent.media;
  * <b>本回合</b>累计兑现的统计快照，供 {@code /context} 单列视觉占用。不可变，volatile 发布。
  *
  * <p><b>为什么按回合而不是按请求</b>：一个回合有几十次工具迭代，用户按 {@code /context} 那一刻，
- * 「上一次请求」几乎必然兑现 0 张（{@link VisionBudget#MAX_TURN_DELIVERIES} 用尽后每次都是 0；
+ * 「上一次请求」几乎必然兑现 0 张（{@link VisionBudget#MAX_TOOL_TURN_DELIVERIES} 用尽后每次都是 0；
  * 回合一结束引用落进历史，按「当轮兑现」规则更不会再兑现）。按请求记则这个数字在实践中恒为零，
  * 等于没写。按回合累计后回合内稳定、回合结束仍看得见刚才那轮花了多少，也与每回合上限同一口径
  * ——用户能直接读出还剩多少额度。

@@ -26,6 +26,7 @@ import io.github.javaside.springai.codetui.agent.media.MediaReferencePreservingC
 import io.github.javaside.springai.codetui.agent.media.SessionFileExternalizer;
 import io.github.javaside.springai.codetui.agent.media.TextReferenceMediaHandler;
 import io.github.javaside.springai.codetui.agent.media.ToolResultMediaHandler;
+import io.github.javaside.springai.codetui.agent.media.VisionBudget;
 import io.github.javaside.springai.codetui.agent.media.VisionMaterializingChatModel;
 import io.github.javaside.springai.codetui.agent.permission.PermissionConfig;
 import io.github.javaside.springai.codetui.agent.permission.PermissionEngine;
@@ -457,6 +458,11 @@ public final class AgentTools {
         // 只在这里扫一次：McpRegistry 指向同一个目录，两处都加等于重复扫。
         ArtifactGc.sweep(root.resolve(".codetui").resolve("artifacts"), ArtifactGc.DEFAULT_MAX_BYTES);
         ToolResultMediaHandler mediaHandler = new TextReferenceMediaHandler();
+        // 视觉预算的唯一实例：既给出站兑现（VisionMaterializer）判定额度，也让工具执行期
+        // （MediaExternalizingCallback）在读图时知道额度是否已尽——后者缺了就出现
+        // 「额度已耗尽，Read 结果仍写着 not_in_view/『Read 一次就能看』」的假话，
+        // 模型据此反复 Read 仍看不到，只能答「看不见」。两处必须共用同一实例，各建一个则永不相等。
+        VisionBudget visionBudget = new VisionBudget();
         // 媒体外置（路径②）：回合间（CodingAgent.submit 开头）把过往「非文本文件」读取结果换成引用（文本文件不动）。
         SessionFileExternalizer fileExternalizer = new SessionFileExternalizer(root);
 
@@ -466,7 +472,8 @@ public final class AgentTools {
         ToolCallback decoratedSkillTool = null;   // 手动 /skill 路径复用同一个被装饰实例（事件/返回与自动路径一致）
         for (int i = 0; i < all.size(); i++) {
             decorated[i] = new PermissionCallback(new ToolEventCallback(
-                    new MediaExternalizingCallback(all.get(i), mediaStore, mediaHandler, root), listener),
+                    new MediaExternalizingCallback(all.get(i), mediaStore, mediaHandler, root, visionBudget),
+                    listener),
                     permissionEngine, listener);
             if (all.get(i) == reloadableSkill) {
                 decoratedSkillTool = decorated[i];   // 记住 Skill 代理装饰后的实例（供手动 /skill 复用）
@@ -665,9 +672,12 @@ public final class AgentTools {
             ChatModel base = retryConfig.l1Enabled()
                     ? RetryingStreamChatModel.wrap(provider.chatModel(), bridge)
                     : provider.chatModel();
+            // 与工具侧（MediaExternalizingCallback）共用同一个 visionBudget 实例：出站兑现开回合、
+            // 工具读图查同一桶，两侧额度口径才一致。
             VisionMaterializingChatModel visionModel = VisionMaterializingChatModel.wrap(
                     base, root,
-                    modelId -> provider.capabilities(modelId).supportsImageInput());
+                    modelId -> provider.capabilities(modelId).supportsImageInput(),
+                    visionBudget);
             visionModels.put(provider.id(), visionModel);
             // 插话注入包在<b>最外层</b>：位置必须在整条 advisor 链下游，才拿得到已配平的完整消息表
             // （工具结果落库与「构建下一次 prompt」是同一步，会话存储层看不到这个位置）。

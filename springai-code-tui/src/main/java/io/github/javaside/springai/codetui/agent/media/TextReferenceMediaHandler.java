@@ -16,8 +16,21 @@ public final class TextReferenceMediaHandler implements ToolResultMediaHandler {
 
     @Override
     public String represent(MediaArtifact media, ModelCapabilities caps) {
+        return represent(media, caps, false);
+    }
+
+    @Override
+    public String represent(MediaArtifact media, ModelCapabilities caps, boolean turnExhausted) {
         if (canDeliver(media.kind(), caps)) {
-            // 有能力：这张图可能在当轮视野里、也可能不在——由出站侧决定并就地改写 delivery。
+            // 额度已尽：本回合再 Read 也拿不回图（额度按回合分桶，Read 落在同一桶里）。
+            // 此时说「Read 一次就能看」是假话，模型会照做、白空转，最后只能答「我看不见」——
+            // 这正是线上「贴了图却说看不到」的直接来源。改成如实报告，让它知道要换一轮。
+            if (turnExhausted) {
+                return FileReference.render(media, FileReference.DELIVERY_TURN_EXHAUSTED,
+                        "this turn's image budget is used up; re-reading will not show it"
+                                + " — start a new turn to view it");
+            }
+            // 有能力且额度未尽：这张图可能在当轮视野里、也可能不在——由出站侧决定并就地改写 delivery。
             // 此处一律写 not_in_view 是保守默认：模型据此知道「Read 一次就能看」。
             return FileReference.render(media, FileReference.DELIVERY_NOT_IN_VIEW,
                     "not currently in view; Read this path to bring it into view");

@@ -71,7 +71,7 @@ public final class VisionMaterializer {
      * 把本次兑现结果并进「本回合累计」快照。
      *
      * <p><b>兑现 0 张不清零</b>——这正是这个统计此前恒为零的根因：一个回合有几十次工具迭代，
-     * {@link VisionBudget#MAX_TURN_DELIVERIES} 用尽后每次都兑现 0；回合结束后引用落进历史，
+     * {@link VisionBudget#MAX_TOOL_TURN_DELIVERIES} 用尽后每次都兑现 0；回合结束后引用落进历史，
      * 按「当轮兑现」规则更不会再兑现。用户按 {@code /context} 那一刻的「上一次请求」几乎必然是 0。
      * 只有 <b>turnKey 变了</b>（换回合、或换 agent）才归零重算。
      *
@@ -132,10 +132,11 @@ public final class VisionMaterializer {
 
         // 用户图<b>先</b>过预算：预算是先到先得，顺序即优先级。反过来会让「照这张稿子改」的
         // 稿子被随后 Read 的图挤掉——功能在最典型的用法上直接失效。
+        // ★ 用户图只受「每请求配额 + token」约束，<b>不</b>参与回合累计额度（见 admitAll 注释）。
         Map<ParsedReference, Outcome> userOutcomes =
-                admitAll(userRefs, VisionBudget.MAX_USER_IMAGES, session);
+                admitAll(userRefs, VisionBudget.MAX_USER_IMAGES, session, false);
         Map<ParsedReference, Outcome> toolOutcomes =
-                admitAll(toolRefs, VisionBudget.MAX_TOOL_IMAGES, session);
+                admitAll(toolRefs, VisionBudget.MAX_TOOL_IMAGES, session, true);
 
         Map<ParsedReference, Media> toolMedia = deliveredMedia(toolOutcomes);
 
@@ -270,9 +271,12 @@ public final class VisionMaterializer {
      * 模型才对得上「第几张是哪个文件」。
      *
      * @param maxDeliveries 本来源的张数配额，按<b>真兑现</b>的张数计——发不出去的格式不该白占一个名额
+     * @param toolImage 是否工具图（决定用哪套回合额度）。<b>用户图必须传 false</b>：用户图与工具图各有独立
+     *        计数器：共享一个时工具循环会挤掉用户图（实测 2 张用户图第 7 轮就被掐掉），而用户贴的
+     *        1–3 张图是他这一轮的<b>全部意图</b>。两边各自有界，成本见 {@link VisionBudget} 类注释。
      */
     private Map<ParsedReference, Outcome> admitAll(List<ParsedReference> refs, int maxDeliveries,
-                                                   VisionBudget.Session session) {
+                                                   VisionBudget.Session session, boolean toolImage) {
         Map<ParsedReference, Outcome> out = new LinkedHashMap<>();
         int delivered = 0;
         for (ParsedReference r : refs) {
@@ -294,7 +298,11 @@ public final class VisionMaterializer {
                 out.put(r, new Outcome(null, FileReference.DELIVERY_BUDGET_EXCEEDED, 0L));
                 continue;
             }
-            if (!session.tryConsumeTurnSlot()) {                    // 本回合累计额度用尽
+            // 本回合累计额度用尽——用户图与工具图各有独立计数器，见 VisionBudget
+            boolean admitted = toolImage
+                    ? session.tryConsumeTurnSlot()
+                    : session.tryConsumeUserTurnSlot();
+            if (!admitted) {
                 out.put(r, new Outcome(null, FileReference.DELIVERY_TURN_EXHAUSTED, 0L));
                 continue;
             }
