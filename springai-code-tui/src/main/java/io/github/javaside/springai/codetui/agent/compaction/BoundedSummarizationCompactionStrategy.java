@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.session.SessionEvent;
@@ -403,7 +404,7 @@ public final class BoundedSummarizationCompactionStrategy implements CompactionS
     private EventSplit splitEvents(List<SessionEvent> events, long targetBudget) {
         if (maxEventsToKeep > 0 && events.size() > maxEventsToKeep) {
             int split = events.size() - maxEventsToKeep;
-            while (split > 0 && !events.get(split).isRootEvent()) split--;
+            while (split > 0 && !isTurnStart(events.get(split))) split--;
             if (split <= 0) split = events.size() == 1 ? 1 : Math.max(1, events.size() - 1);
             return new EventSplit(List.copyOf(events.subList(0, split)),
                     List.copyOf(events.subList(split, events.size())));
@@ -432,8 +433,20 @@ public final class BoundedSummarizationCompactionStrategy implements CompactionS
             used += eventTokens;
             start = i;
         }
-        while (start < events.size() && start > 0 && !events.get(start).isRootEvent()) start--;
+        while (start < events.size() && start > 0 && !isTurnStart(events.get(start))) start--;
         return start;
+    }
+
+    /**
+     * 保留窗口只能从「真正的用户回合起点」切开:根级(非子 agent 分支)且是 USER 消息。
+     *
+     * <p>此前只判 {@link SessionEvent#isRootEvent()},但该方法在 spring-ai-session-management
+     * 里仅表示「不在子 agent 分支」({@code branch == null}),单 agent 会话对每条事件恒为 true——
+     * 导致边界回退成空操作,切割点可能落在 {@code tool_use} 与其 {@code tool_result} 之间,
+     * 把归档/保留切成孤儿 tool_result,发给模型即报 400(见框架自带 {@code CompactionUtils.snapToTurnStart})。
+     */
+    private static boolean isTurnStart(SessionEvent event) {
+        return event.isRootEvent() && event.getMessageType() == MessageType.USER;
     }
 
     private List<List<SessionEvent>> chunks(List<SessionEvent> events, long chunkBudget) {
