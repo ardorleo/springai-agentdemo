@@ -28,6 +28,7 @@ import io.github.javaside.springai.codetui.ui.CodeTuiView;
 import io.github.javaside.springai.codetui.ui.ConversationState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.bridge.SLF4JBridgeHandler;
 
 import java.nio.file.Path;
 import java.time.Duration;
@@ -46,6 +47,11 @@ public class CodeTuiApplication {
     private static final String PERMISSION_MODE_FLAG = "--permission-mode";
 
     public static void main(String[] args) throws Exception {
+        // 必须早于 HTTP 客户端 / MCP / TUI 初始化：JUL 默认 ConsoleHandler 会绕过
+        // 行内渲染器直写 stderr，使真实光标与差分帧失步。保留告警及异常栈，统一写入文件。
+        // 先移除旧 handlers（含已有桥接）再安装，重复初始化也只会保留一个桥接。
+        SLF4JBridgeHandler.removeHandlersForRootLogger();
+        SLF4JBridgeHandler.install();
         Path root = Path.of(System.getProperty("user.dir")).toAbsolutePath();
 
         // 多家 provider：谁配了 key 谁 available。至少需一家可用（通常 DeepSeek）。

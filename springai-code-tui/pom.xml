@@ -89,6 +89,11 @@
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
         </dependency>
+        <!-- OkHttp / TamboUI 的 JUL 日志统一进 Logback 文件，避免 stderr 撕裂行内界面。 -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>jul-to-slf4j</artifactId>
+        </dependency>
         <!-- 仅用内容魔数检测文件类型（不引完整 Tika parser）：替换手写魔数白名单 -->
         <dependency>
             <groupId>org.apache.tika</groupId>
