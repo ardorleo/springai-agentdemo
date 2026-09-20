@@ -205,11 +205,13 @@ class RetryPolicyTest {
 
     @Test
     void backoffSequenceIsExponentialCapped() {
-        assertEquals(500, RetryPolicy.backoffMsAfter(1));
-        assertEquals(1000, RetryPolicy.backoffMsAfter(2));
-        assertEquals(2000, RetryPolicy.backoffMsAfter(3));
-        assertEquals(4000, RetryPolicy.backoffMsAfter(4));
-        assertEquals(4000, RetryPolicy.backoffMsAfter(99), "封顶后不再增长");
+        assertEquals(1000, RetryPolicy.backoffMsAfter(1));
+        assertEquals(2000, RetryPolicy.backoffMsAfter(2));
+        assertEquals(4000, RetryPolicy.backoffMsAfter(3));
+        assertEquals(8000, RetryPolicy.backoffMsAfter(4));
+        assertEquals(16000, RetryPolicy.backoffMsAfter(5));
+        assertEquals(30000, RetryPolicy.backoffMsAfter(6));
+        assertEquals(30000, RetryPolicy.backoffMsAfter(99), "封顶后不再增长");
     }
 
     /** 退避同样委托：两个入口必须逐点一致。 */

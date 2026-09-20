@@ -38,8 +38,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       非瞬态）→ 原样放行。</li>
  * </ol>
  *
- * <p><b>退避</b>：{@code Retry.backoff(4, 500ms)} 指数封顶 4s、jitter(0) <b>显式关闭</b>
- * （默认 0.5 会随机化退避，打翻序列测试、UI 文案「0.5s 后重发」与预算算术；单用户 TUI
+ * <p><b>退避</b>：{@code backoffRetry(6, ...)} 指数 1s×2^n 封顶 30s（序列 1s·2s·4s·8s·16s·30s）、
+ * jitter(0) <b>显式关闭</b>
+ * （默认 0.5 会随机化退避，打翻序列测试、UI 文案「1s 后重发」与预算算术；单用户 TUI
  * 无并发不需要抖动，且与子 agent {@code Thread.sleep} 版严格同参）。判据与退避的唯一真相源是
  * {@link RetryPolicy}。
  *
@@ -52,10 +53,8 @@ public final class RetryingStreamChatModel implements ChatModel {
 
     private static final Logger log = LoggerFactory.getLogger(RetryingStreamChatModel.class);
 
-    static final long BACKOFF_MS = 500;
-    static final long CAP_BACKOFF_MS = 4000;
-    /** 重试次数（⚠ Retry.backoff 首参是重试次数不是总尝试数）：总尝试 = 5，与子 agent 对齐。 */
-    static final long L1_RETRIES = 4;
+    /** 重试次数（⚠ 首参是重试次数不是总尝试数）：总尝试 = 7，与子 agent 对齐。退避常量的唯一真相源在 {@link RetryPolicy}。 */
+    public static final long L1_RETRIES = 6;
 
     /** reason 的显示宽上限（UI ↻ 行 reason 部分的预算，超出尾加 …）。 */
     static final int REASON_MAX_WIDTH = 60;
@@ -89,21 +88,19 @@ public final class RetryingStreamChatModel implements ChatModel {
                 .concatWith(Mono.defer(() -> emitted.get() == 0           // 空流守卫（完成但零有效内容）
                         ? Mono.error(new EmptyStreamException("LLM 流式响应为空（无文本、无工具调用）——疑似网关空响应"))
                         : Mono.empty()))                                   // → 转 error 进 retryWhen
-                .retryWhen(Retry.backoff(L1_RETRIES, Duration.ofMillis(BACKOFF_MS))
-                        .jitter(0d)                                        // R4：显式关闭，序列 0.5/1/2/4
-                        .maxBackoff(Duration.ofMillis(CAP_BACKOFF_MS))
-                        .doBeforeRetry(sig -> {
+                // 退避/延迟（含 Retry-After）与判据的唯一真相源都在 RetryPolicy；filter = 零下发 + 瞬态。
+                .retryWhen(RetryPolicy.backoffRetry(L1_RETRIES,
+                        ex -> emitted.get() == 0 && RetryPolicy.shouldRetry(ex),
+                        (totalRetries, backoffMs, failure) -> {
                             // attempt = 即将进行的第几次尝试（首重试=2），与 RetryReporter 口径一致
-                            int attempt = (int) sig.totalRetries() + 2;
-                            long backoffMs = RetryPolicy.backoffMsAfter((int) sig.totalRetries() + 1);
-                            String reason = reasonOf(sig.failure());
+                            int attempt = (int) totalRetries + 2;
+                            String reason = reasonOf(failure);
                             log.warn("主 agent 流式请求失败（第 {}/{} 次），{}ms 后重试：{}",
                                     attempt, L1_RETRIES + 1, backoffMs, reason);
                             if (reporter != null) {
                                 reporter.report(attempt, backoffMs, reason);
                             }
-                        })
-                        .filter(ex -> emitted.get() == 0 && RetryPolicy.shouldRetry(ex)))
+                        }))
                 .transformDeferred(this::classify);
     }
 

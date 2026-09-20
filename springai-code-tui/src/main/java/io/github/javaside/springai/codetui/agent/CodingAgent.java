@@ -21,12 +21,12 @@ import reactor.core.publisher.Flux;
 import reactor.core.Disposable;
 import reactor.core.Disposables;
 import reactor.core.scheduler.Schedulers;
-import reactor.util.retry.Retry;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import io.github.javaside.springai.codetui.agent.interjection.InterjectingChatModel;
 import io.github.javaside.springai.codetui.agent.compaction.NotifyingCompactionStrategy;
 import io.github.javaside.springai.codetui.agent.llm.ModelOption;
+import io.github.javaside.springai.codetui.agent.llm.RetryingStreamChatModel;
 import io.github.javaside.springai.codetui.agent.llm.RetryPolicy;
 import io.github.javaside.springai.codetui.agent.llm.RetryReporter;
 import io.github.javaside.springai.codetui.agent.llm.StreamInterruptedException;
@@ -59,7 +59,6 @@ import io.github.javaside.springai.codetui.ui.update.UiChangeListener;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
@@ -463,7 +462,7 @@ public final class CodingAgent implements SubmitHandler {
         activeTurnL1Sink = (attempt, backoffMs, reason) -> {
             if (activeTurnId.get() == turnId) {
                 l1Retries.incrementAndGet();
-                listener.onRetryScheduled(turnId, attempt, 5, backoffMs, reason);
+                listener.onRetryScheduled(turnId, attempt, (int) (RetryingStreamChatModel.L1_RETRIES + 1), backoffMs, reason);
             }
         };
         // 出站净化（层①）：发请求前先把会话裁到合法前缀。上一回合若被取消、且有迟到的子 agent 写入漏进会话
@@ -554,17 +553,16 @@ public final class CodingAgent implements SubmitHandler {
         })
                 // 阻塞准备段与 advisor 链不跑在 parallel 调度器；位置必须在 defer 与 retryWhen 之间（覆盖重订阅）。
                 .subscribeOn(Schedulers.boundedElastic())
-                // L2 回合级续跑：白名单 = StreamInterruptedException；上限 = 2 次续跑 + 首次 = 共 3 次完整流。
-                .retryWhen(Retry.backoff(2, Duration.ofSeconds(1))
-                        .maxBackoff(Duration.ofSeconds(4))
-                        .jitter(0d)   // 与 L1 同款显式关闭（jitter 会让真实 delay 与 resumeBackoffMs 不符）
-                        .filter(ex -> l2Enabled && ex instanceof StreamInterruptedException)
-                        // L2 提示行触发点（与 L1 同款 doBeforeRetry 纪律；退避 delay 前同步执行）：
-                        // attempt = 续跑序号（1..2）；maxAttempts 传 2 供 UI 拼「续跑 b/2」文案。
-                        .doBeforeRetry(sig -> listener.onRetryScheduled(turnId,
-                                (int) sig.totalRetries() + 1,
-                                2,
-                                resumeBackoffMs((int) sig.totalRetries()),
+                // L2 回合级续跑：白名单 = StreamInterruptedException；上限 = 4 次续跑 + 首次 = 共 5 次完整流。
+                // 退避/延迟（含 Retry-After）的唯一真相源在 RetryPolicy.backoffRetry（与 L1 共用）。
+                .retryWhen(RetryPolicy.backoffRetry(L2_RESUMES,
+                        ex -> l2Enabled && ex instanceof StreamInterruptedException,
+                        // L2 提示行触发点（退避 delay 前同步执行）：attempt = 续跑序号（1..4，= totalRetries+1）；
+                        // maxAttempts 传 L2_RESUMES 供 UI 拼「续跑 b/4」文案。
+                        (totalRetries, backoffMs, failure) -> listener.onRetryScheduled(turnId,
+                                (int) totalRetries + 1,
+                                (int) L2_RESUMES,
+                                backoffMs,
                                 "流中断")))
                 .doOnNext(resp -> handleChunk(resp, turnId))
                 // 终态错误一次（解包 L2 包装 + 拼重试前缀文案；l2 计数 = resubscriptions-1）。
@@ -588,6 +586,9 @@ public final class CodingAgent implements SubmitHandler {
             }
         });
     }
+
+    /** L2 回合级续跑上限（不含首次尝试）：4 次续跑 + 首次 = 共 5 次完整流。退避唯一真相源在 {@link RetryPolicy}。 */
+    static final long L2_RESUMES = 4;
 
     /** 续跑恢复的形状：尾部 user → 重放 .user()；尾部 tool/其他 → 走 Interjecting 注入通道。 */
     private enum ResumeShape { FROM_TEXT, FROM_TOOLS }
@@ -722,11 +723,6 @@ public final class CodingAgent implements SubmitHandler {
             return "";
         }
         return "已自动重试（传输 " + l1Retries + " 次/续跑 " + l2Retries + " 次）仍失败：";
-    }
-
-    /** 续跑退避纯函数：1s×2ⁿ 封顶 4s，与 Retry.backoff(2,1s) 同公式，jitter(0) 下与真实 delay 严格相等。 */
-    static long resumeBackoffMs(int totalRetries) {
-        return Math.min(1000L << Math.min(totalRetries, 2), 4000L);
     }
 
     /**

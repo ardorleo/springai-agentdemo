@@ -32,7 +32,7 @@ import java.util.function.LongConsumer;
  *
  * <p><b>不</b>重试取消/中断（回合 Esc 要立即退出，且中断标志位必须保留）；stream() 原样透传（子 agent 不用）。
  *
- * <p><b>退避</b>：指数 500ms×2^n 封顶 4s，总尝试 5 次。瞬态判据与退避的唯一真相源是
+ * <p><b>退避</b>：指数 1s×2^n 封顶 30s（序列 1s·2s·4s·8s·16s·30s），总尝试 7 次。瞬态判据与退避的唯一真相源是
  * {@link RetryPolicy}（与后续 RetryingStreamChatModel 共用），本类仅保留同名静态方法委托
  * （2026-08-17 生产日志实测扩容）。休眠可注入
  * （{@link RetryingChatModel#RetryingChatModel(ChatModel, LongConsumer)}），测试不必真实等待。
@@ -43,8 +43,8 @@ public final class RetryingChatModel implements ChatModel {
 
     private static final Logger log = LoggerFactory.getLogger(RetryingChatModel.class);
 
-    /** 总尝试次数（1 次原始 + 4 次重试）。日志实测网关坏窗口/限流以十秒计，3 次等价没等。 */
-    static final int MAX_ATTEMPTS = 5;
+    /** 总尝试次数（1 次原始 + 6 次重试）。日志实测网关坏窗口/限流以十秒计，退避序列 1s·2s·4s·8s·16s·30s。 */
+    static final int MAX_ATTEMPTS = 7;
 
     private final ChatModel delegate;
     /** 休眠器：生产 Thread::sleep；测试注入收集间隔的桩，避免真实等待。 */
@@ -53,7 +53,9 @@ public final class RetryingChatModel implements ChatModel {
     private RetryingChatModel(ChatModel delegate) {
         this(delegate, ms -> {
             try {
-                Thread.sleep(ms);
+                // 实际睡眠经 RetryPolicy 的测试钩子换算（生产恒等）——与 L1/L2 的 reactive 退避共用
+                // 同一压缩函数：耗尽用例一处 setDelayScaleForTest 即可让子 agent 阻塞退避也秒过。
+                Thread.sleep(RetryPolicy.scaledDelayMsForTest(ms));
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
                 throw new RuntimeException(ie);

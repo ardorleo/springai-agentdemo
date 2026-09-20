@@ -15,6 +15,7 @@ import io.github.javaside.springai.codetui.agent.seam.StubListener;
 import io.github.javaside.springai.codetui.agent.session.TokenUsageAccumulator;
 import io.github.javaside.springai.codetui.agent.subagent.SubagentRunner;
 import io.github.javaside.springai.codetui.agent.subagent.SubagentSpec;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
@@ -85,6 +86,12 @@ class CodingAgentTurnResumeTest {
 
     private static final String TOOL = "QuickProbe";
     private static final StreamRetryConfig CFG_ALL = new StreamRetryConfig(StreamRetryMode.ALL);
+
+    // 退避睡眠压缩钩子（默认不装——仅耗尽用例 case05/case19 显式调 compressBackoff()：真实序列
+    // 1s·2s·4s·8s·16s·30s 会让它们分钟级；只压实际等待，上报 backoffMs（nextDelayMs 真值）不变，
+    // 序列断言仍打真值）。@AfterEach 无条件复位，防钩子泄漏到依赖真实退避窗口的用例（如 case07 的 Esc）。
+    static void compressBackoff() { RetryPolicy.setDelayScaleForTest(ms -> Math.min(ms, 1L)); }
+    @AfterEach void restoreBackoff() { RetryPolicy.resetDelayScaleForTest(); }
 
     // ── 记录型 listener：本测试不用空桩的 onRetryScheduled ──────────────────────────
     static class RecordingListener extends StubListener {
@@ -214,13 +221,13 @@ class CodingAgentTurnResumeTest {
         assertTrue(l.retries.size() >= n, "只收到 " + l.retries.size() + " 次 onRetryScheduled，期望 " + n);
     }
 
-    /** C5（Task 8 review I2）：L2 续跑 onRetryScheduled 载荷整段断言——attempt=续跑序号 1..2、maxAttempts=2、
-     *  backoffMs=resumeBackoffMs 现算（1s×2ⁿ，jitter(0) 下与真实 delay 严格相等）、reason=「流中断」。 */
+    /** L2 续跑 onRetryScheduled 载荷整段断言——attempt=续跑序号、maxAttempts、reason，backoffMs 打
+     *  RetryPolicy.nextDelayMs 真值（退避睡眠虽被测试钩子压缩，但上报值恒为真值，故序列断言仍精确）。 */
     static void assertRetryPayload(Object[] r, long turnId, int attempt, int maxAttempts, long backoffMs, String reason) {
         assertEquals(turnId, r[0], "turnId");
         assertEquals(attempt, r[1], "attempt（续跑序号）");
         assertEquals(maxAttempts, r[2], "maxAttempts（UI 拼文案用）");
-        assertEquals(backoffMs, r[3], "backoffMs（resumeBackoffMs 现算，jitter(0) 下与真实 delay 严格相等）");
+        assertEquals(backoffMs, r[3], "backoffMs（nextDelayMs 真值，不受测试睡眠压缩影响）");
         assertEquals(reason, r[4], "reason");
     }
 
@@ -447,31 +454,39 @@ class CodingAgentTurnResumeTest {
         Interjections interjections = new Interjections();
         RecordingListener lis = new RecordingListener();
         List<Prompt> prompts = new CopyOnWriteArrayList<>();
+        compressBackoff();                             // 4 次续跑真实退避 1s·2s·4s·8s，压到 1ms 秒过
+        // 首次 ① 文本断 → 续跑 1；随后三轮「工具→续跑」（每轮末尾 FROM_TOOLS）→ 续跑 2/3/4；
+        // 第 4 次续跑轮直接 SII → 耗尽（L2_RESUMES=4）。共 8 次 stream 订阅。
         ChatModel model = stubModel(prompts, script(
-                () -> textThenSii("半", "net down"),
-                () -> Flux.just(toolCallChunk(3)),
-                () -> Flux.error(sii("net down")),
-                () -> Flux.error(sii("net down"))));
+                () -> textThenSii("半", "net down"),   // resub1 ① 文本断
+                () -> Flux.just(toolCallChunk(3)),       // resub2 工具调用
+                () -> Flux.error(sii("net down")),       // resub2 工具结果后断 → ② 续跑2
+                () -> Flux.just(toolCallChunk(4)),       // resub3 工具调用
+                () -> Flux.error(sii("net down")),       // resub3 断 → ② 续跑3
+                () -> Flux.just(toolCallChunk(5)),       // resub4 工具调用
+                () -> Flux.error(sii("net down")),       // resub4 断 → ② 续跑4
+                () -> Flux.error(sii("net down"))));     // resub5 直接断 → 耗尽
         CodingAgent agent = agent(sessions, repo, client(model, sessions, interjections, quickTool()),
                 lis, sid, new AtomicLong(), interjections, null, CFG_ALL, null);
 
         agent.submit("问题");
 
-        awaitPrompts(prompts, 4);
+        awaitPrompts(prompts, 8);
         awaitTurnEnd(lis);
 
-        assertEquals(4, prompts.size(), "首次 + 2 次续跑 = 3 个顶层回合（工具轮计 2 次模型调用）");
+        assertEquals(8, prompts.size(), "首次 + 4 次续跑（含 3 轮工具循环）= 8 次模型调用");
         assertEquals(1, lis.errors.size(), "耗尽只报一次 onError");
         Throwable err = (Throwable) lis.errors.get(0)[1];
         String msg = err.getMessage();
         assertNotNull(msg);
         assertTrue(msg.contains("已自动重试"), "文案应含已自动重试，实际：" + msg);
         assertTrue(msg.contains("net down"), "文案应含根因 message，实际：" + msg);
-        // C5（Task 8 review I2）：两次续跑载荷序列 [{attempt:1,max:2,backoffMs:1000,reason:"流中断"},
-        // {attempt:2,max:2,backoffMs:2000,reason:"流中断"}]——doBeforeRetry 现算、jitter(0) 下与真实 delay 严格相等。
-        assertEquals(2, lis.retries.size(), "2 次续跑各排定一次");
-        assertRetryPayload(lis.retries.get(0), 1L, 1, 2, 1000L, "流中断");
-        assertRetryPayload(lis.retries.get(1), 1L, 2, 2, 2000L, "流中断");
+        // 四次续跑载荷序列：attempt 1..4、max=4、backoffMs=nextDelayMs 真值（1s·2s·4s·8s）、reason=流中断。
+        assertEquals(4, lis.retries.size(), "4 次续跑各排定一次");
+        assertRetryPayload(lis.retries.get(0), 1L, 1, 4, 1000L, "流中断");
+        assertRetryPayload(lis.retries.get(1), 1L, 2, 4, 2000L, "流中断");
+        assertRetryPayload(lis.retries.get(2), 1L, 3, 4, 4000L, "流中断");
+        assertRetryPayload(lis.retries.get(3), 1L, 4, 4, 8000L, "流中断");
         assertEquals(0, emptyUserCount(sessions, sid),
                 "耗尽失败路径的 blank 必须在 handleErrorWithRetryPrefix 末尾被清");
     }
@@ -703,7 +718,7 @@ class CodingAgentTurnResumeTest {
     // 11 L1 计数桥：真实 RetryingStreamChatModel 零下发失败 2 次后成功（模拟 Task 7 装配层桥接）
     // ════════════════════════════════════════════════════════════════════════════
     @Test
-    @DisplayName("11 L1 桥：桩模型层 Retrying 的 report 经 onL1Retry → onRetryScheduled(turnId,2,5,500,reason)")
+    @DisplayName("11 L1 桥：桩模型层 Retrying 的 report 经 onL1Retry → onRetryScheduled(turnId,2,7,1000,reason)")
     void case11_l1BridgeCounts() throws Exception {
         SessionRepository repo = InMemorySessionRepository.builder().build();
         SessionService sessions = sessions(repo);
@@ -731,8 +746,8 @@ class CodingAgentTurnResumeTest {
         Object[] first = lis.retries.get(0);
         assertEquals(1L, first[0], "turnId");
         assertEquals(2, first[1], "attempt（首重试 = 2）");
-        assertEquals(5, first[2], "L1 maxAttempts=5（UI 拼文案用）");
-        assertEquals(500L, first[3], "L1 首重试退避 500ms");
+        assertEquals(7, first[2], "L1 maxAttempts=7（总尝试数；UI 拼文案用）");
+        assertEquals(1000L, first[3], "L1 首重试退避 1s（BACKOFF_MS，nextDelayMs 真值）");
         assertNotNull(first[4], "reason 非空");
     }
 
@@ -979,11 +994,11 @@ class CodingAgentTurnResumeTest {
     }
 
     // ════════════════════════════════════════════════════════════════════════════
-    // 19 L1-only 耗尽：桥路径 4 次 onL1Retry 后仍终败（L2 关）→ onError 文案按 retryFailurePrefix
-    //    拼「传输 4 次/续跑 0 次」（真实 Retry.backoff 退避 ~7.5s，桥与耗尽语义为被测主体）
+    // 19 L1-only 耗尽：桥路径 6 次 onL1Retry 后仍终败（L2 关）→ onError 文案按 retryFailurePrefix
+    //    拼「传输 6 次/续跑 0 次」（退避睡眠经 @BeforeEach 压到 1ms；桥与耗尽语义为被测主体）
     // ════════════════════════════════════════════════════════════════════════════
     @Test
-    @DisplayName("19 L1-only 耗尽：桥路径 4 次 onL1Retry 后终败；onError 含「传输 4 次/续跑 0 次」")
+    @DisplayName("19 L1-only 耗尽：桥路径 6 次 onL1Retry 后终败；onError 含「传输 6 次/续跑 0 次」")
     void case19_l1OnlyExhaustionPrefix() throws Exception {
         SessionRepository repo = InMemorySessionRepository.builder().build();
         SessionService sessions = sessions(repo);
@@ -991,12 +1006,14 @@ class CodingAgentTurnResumeTest {
         Interjections interjections = new Interjections();
         RecordingListener lis = new RecordingListener();
         List<Prompt> prompts = new CopyOnWriteArrayList<>();
-        ChatModel stub = stubModel(prompts, script(
-                () -> Flux.error(new RuntimeException("Request failed", new java.io.EOFException("read failed"))),
-                () -> Flux.error(new RuntimeException("Request failed", new java.io.EOFException("read failed"))),
-                () -> Flux.error(new RuntimeException("Request failed", new java.io.EOFException("read failed"))),
-                () -> Flux.error(new RuntimeException("Request failed", new java.io.EOFException("read failed"))),
-                () -> Flux.error(new RuntimeException("Request failed", new java.io.EOFException("read failed")))));
+        compressBackoff();                             // 6 次重试真实退避 1s..30s，压到 1ms 秒过
+        // 首次 + 6 次重试 = 7 次订阅全失败（L1_RETRIES=6，总尝试 7）。
+        List<Supplier<Flux<ChatResponse>>> failures = new ArrayList<>();
+        for (int i = 0; i < RetryingStreamChatModel.L1_RETRIES + 1; i++) {
+            failures.add(() -> Flux.error(
+                    new RuntimeException("Request failed", new java.io.EOFException("read failed"))));
+        }
+        ChatModel stub = stubModel(prompts, failures);
         SinkHolder bridge = new SinkHolder();
         ChatModel l1 = RetryingStreamChatModel.wrap(stub, bridge);
         AtomicLong turnIds = new AtomicLong();
@@ -1007,21 +1024,21 @@ class CodingAgentTurnResumeTest {
 
         agent.submit("问题");
         awaitPrompts(prompts, 1);
-        awaitRetries(lis, 4);
+        awaitRetries(lis, 6);
         awaitTurnEnd(lis);
 
         assertEquals(1, prompts.size(), "L1 重订阅发生在模型层内部，ChatClient 只调用一次 stream");
         assertTrue(lis.completed.isEmpty(), "耗尽不得 onTurnComplete");
-        assertEquals(4, lis.retries.size(), "L1 4 次重试各上报一次（总尝试 5 次）");
-        for (int i = 0; i < 4; i++) {
-            assertRetryPayload(lis.retries.get(i), 1L, i + 2, 5,
+        assertEquals(6, lis.retries.size(), "L1 6 次重试各上报一次（总尝试 7 次）");
+        for (int i = 0; i < 6; i++) {
+            assertRetryPayload(lis.retries.get(i), 1L, i + 2, 7,
                     RetryPolicy.backoffMsAfter(i + 1), "Request failed");
         }
         assertEquals(1, lis.errors.size(), "耗尽只报一次 onError");
         Throwable err = (Throwable) lis.errors.get(0)[1];
         assertNotNull(err.getMessage());
         String msg = err.getMessage();
-        assertTrue(msg.contains("已自动重试（传输 4 次/续跑 0 次）"), "终败文案应按 retryFailurePrefix 拼计数，实际：" + msg);
+        assertTrue(msg.contains("已自动重试（传输 6 次/续跑 0 次）"), "终败文案应按 retryFailurePrefix 拼计数，实际：" + msg);
         assertTrue(msg.contains("Request failed"), "文案应含根因 message，实际：" + msg);
     }
 

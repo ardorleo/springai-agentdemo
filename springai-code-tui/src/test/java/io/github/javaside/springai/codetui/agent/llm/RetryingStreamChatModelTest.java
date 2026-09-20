@@ -203,14 +203,14 @@ class RetryingStreamChatModelTest {
         ChatModel m = RetryingStreamChatModel.wrap(delegate(n ->
                 Flux.error(wcre429("Too Many Requests #" + n)), calls), null);
         StepVerifier.withVirtualTime(() -> m.stream(PROMPT))
-                .thenAwait(Duration.ofSeconds(8))   // 完整退避 0.5+1+2+4=7.5s，无墙钟等待
+                .thenAwait(Duration.ofSeconds(65))   // 完整退避 1+2+4+8+16+30=61s，虚拟时钟无墙钟等待
                 .expectErrorSatisfies(ex -> {
                     WebClientResponseException wcre = assertInstanceOf(WebClientResponseException.class, ex);
-                    assertTrue(wcre.getMessage().contains("#5"), "应解包放行最后一次失败，实际=" + wcre.getMessage());
+                    assertTrue(wcre.getMessage().contains("#7"), "应解包放行最后一次失败，实际=" + wcre.getMessage());
                     assertFalse(reactor.core.Exceptions.isRetryExhausted(ex), "已解包，不再是 RetryExhaustedException");
                 })
                 .verify();
-        assertEquals(5, calls.get(), "总尝试 = 1 + L1_RETRIES(4)");
+        assertEquals(7, calls.get(), "总尝试 = 1 + L1_RETRIES(6)");
     }
 
     // 10 emitted 重置（回归钉子）：attempt1 空流、attempt2 发 1 chunk 后断 → emittedChunks()==1
@@ -246,27 +246,29 @@ class RetryingStreamChatModelTest {
         assertEquals(1, calls.get());
     }
 
-    // 12 RetryReporter + 退避序列：VTS 接管 Retry.backoff 的退避 delay → 完整 4 跳（jitter(0)）
+    // 12 RetryReporter + 退避序列：VTS 接管 Retry 的退避 delay → 完整 6 跳（jitter(0)，序列 1·2·4·8·16·30s）
     @Test
     void reportsAttemptBackoffAndReasonWithVirtualTime() {
         AtomicInteger calls = new AtomicInteger();
         RecordingReporter reporter = new RecordingReporter();
         ChatModel m = RetryingStreamChatModel.wrap(delegate(n ->
-                n <= 5 ? Flux.error(wcre429("Too Many Requests")) : Flux.just(chunk("done")), calls), reporter);
+                n <= 7 ? Flux.error(wcre429("Too Many Requests")) : Flux.just(chunk("done")), calls), reporter);
         // supplier 内部调用 stream——VTS 接管发生在 supplier 求值前
         StepVerifier.withVirtualTime(() -> m.stream(PROMPT))
-                .thenAwait(Duration.ofSeconds(25))   // 0.5+1+2+4=7.5s，上界取全局预算值
+                .thenAwait(Duration.ofSeconds(65))   // 1+2+4+8+16+30=61s，上界取全局预算值
                 .expectError(WebClientResponseException.class)
                 .verify();
-        assertEquals(5, calls.get());
+        assertEquals(7, calls.get());
         // reason 非空且含根因特征（防工人自发明 reason 实现静默流入 UI）；
         // reasonOf 沿 cause 链取首个非空 message——WCRE 的 message 即 "429 Too Many Requests"
         // （statusText 含 reasonPhrase 前缀， WebClientResponseException 构造语义）
         assertEquals(List.of(
-                        new Report(2, 500L, "429 Too Many Requests"),
-                        new Report(3, 1000L, "429 Too Many Requests"),
-                        new Report(4, 2000L, "429 Too Many Requests"),
-                        new Report(5, 4000L, "429 Too Many Requests")),
+                        new Report(2, 1000L, "429 Too Many Requests"),
+                        new Report(3, 2000L, "429 Too Many Requests"),
+                        new Report(4, 4000L, "429 Too Many Requests"),
+                        new Report(5, 8000L, "429 Too Many Requests"),
+                        new Report(6, 16000L, "429 Too Many Requests"),
+                        new Report(7, 30000L, "429 Too Many Requests")),
                 reporter.reports);
         for (Report r : reporter.reports) {
             assertTrue(r.reason().contains("Too Many"), "reason 应含根因特征，实际=" + r.reason());

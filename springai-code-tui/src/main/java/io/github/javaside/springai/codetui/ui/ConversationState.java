@@ -1292,8 +1292,12 @@ public final class ConversationState implements AgentListener, UiChangeSource {
         retryBackoffText = null;
     }
 
+    /**
+     * L1 传输重试 maxAttempts = 总尝试数 7（{@code RetryingStreamChatModel.L1_RETRIES + 1}）；L2 回合级续跑
+     * maxAttempts = 续跑次数 4（{@code CodingAgent.L2_RESUMES}）。两者数值不同，据此区分「传输/续跑」文案后缀。
+     */
     private static String retryTag(int attempt, int maxAttempts) {
-        return attempt + "/" + maxAttempts + (maxAttempts == 5 ? "·传输" : "·续跑");
+        return attempt + "/" + maxAttempts + (maxAttempts == 7 ? "·传输" : "·续跑");
     }
 
     private static String formatBackoff(long backoffMs) {

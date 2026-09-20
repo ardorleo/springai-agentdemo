@@ -12,6 +12,9 @@ import io.github.javaside.springai.codetui.agent.seam.StubListener;
 import io.github.javaside.springai.codetui.agent.background.BackgroundTask;
 import io.github.javaside.springai.codetui.agent.background.BackgroundTaskRegistry;
 import io.github.javaside.springai.codetui.ui.ConversationState;
+import io.github.javaside.springai.codetui.agent.llm.RetryPolicy;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -33,6 +36,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** runInBackground：立刻返回、结果回填注册表、前台闸门不被拉高。用假 ChatModel，不联网。 */
 class SubagentRunnerBackgroundTest {
+
+    // 子 agent 阻塞退避与 L1/L2 共用 RetryPolicy 的睡眠钩子：失败用例走满 6 次重试（1s..30s 真实退避，
+    // 累计 61s）远超测试超时——压到 1ms 秒过，@AfterEach 复位防钩子泄漏。
+    @BeforeEach void compressBackoff() { RetryPolicy.setDelayScaleForTest(ms -> Math.min(ms, 1L)); }
+    @AfterEach void restoreBackoff() { RetryPolicy.resetDelayScaleForTest(); }
 
     private static ChatModel chatModel(String text, CountDownLatch gate) {
         return new ChatModel() {
@@ -75,8 +83,8 @@ class SubagentRunnerBackgroundTest {
     }
 
     private static void awaitDone(BackgroundTaskRegistry reg, String id) throws InterruptedException {
-        // 500 轮 ×20ms = 10s：失败路径会走满 5 次重试 ×指数退避（500+1000+2000+4000 = 7.5s），
-        // 旧 2s 上限在退避升级后必然超时。10s 仍留 ~2.5s 余量给调度抖动。
+        // 500 轮 ×20ms = 10s：失败路径走满 6 次重试，但 @BeforeEach 已把退避压到 1ms/次，秒级完成；
+        // 10s 上限只给调度抖动留足余量。
         for (int i = 0; i < 500; i++) {
             if (reg.find(id) != null && reg.find(id).finished()) return;
             Thread.sleep(20);

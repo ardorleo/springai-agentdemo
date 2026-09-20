@@ -246,14 +246,16 @@ class RetryingChatModelTest {
 
     // ---- 指数退避 ----
 
-    /** backoffMsAfter 纯函数：500/1000/2000/4000，封顶后不再增长。 */
+    /** backoffMsAfter 纯函数：1000/2000/4000/8000/16000/30000，封顶后不再增长。 */
     @Test
     void backoffSequenceIsExponentialCapped() {
-        assertEquals(500, RetryingChatModel.backoffMsAfter(1));
-        assertEquals(1000, RetryingChatModel.backoffMsAfter(2));
-        assertEquals(2000, RetryingChatModel.backoffMsAfter(3));
-        assertEquals(4000, RetryingChatModel.backoffMsAfter(4));
-        assertEquals(4000, RetryingChatModel.backoffMsAfter(99), "封顶后不再增长");
+        assertEquals(1000, RetryingChatModel.backoffMsAfter(1));
+        assertEquals(2000, RetryingChatModel.backoffMsAfter(2));
+        assertEquals(4000, RetryingChatModel.backoffMsAfter(3));
+        assertEquals(8000, RetryingChatModel.backoffMsAfter(4));
+        assertEquals(16000, RetryingChatModel.backoffMsAfter(5));
+        assertEquals(30000, RetryingChatModel.backoffMsAfter(6));
+        assertEquals(30000, RetryingChatModel.backoffMsAfter(99), "封顶后不再增长");
     }
 
     /** 全部失败时按指数序列真实休眠（经注入桩收集），且总尝试次数 = MAX_ATTEMPTS。 */
@@ -265,7 +267,7 @@ class RetryingChatModelTest {
                 flaky(99, new FakeIoException("Request failed"), calls), slept::add);
         assertThrows(RuntimeException.class, () -> m.call(new Prompt("hi")));
         assertEquals(RetryingChatModel.MAX_ATTEMPTS, calls.get());
-        assertEquals(List.of(500L, 1000L, 2000L, 4000L), slept);
+        assertEquals(List.of(1000L, 2000L, 4000L, 8000L, 16000L, 30000L), slept);
     }
 
     /** 休眠中被中断：保留中断标志、立即抛出，不再继续重试（Esc 语义）。 */

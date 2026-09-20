@@ -46,13 +46,13 @@ class ConversationStateRetryTest {
     void transportRetryWithoutPartialLineHasNoSeparator() {
         ConversationState state = started(1L);
 
-        state.onRetryScheduled(1L, 2, 5, 500L, "429");
+        state.onRetryScheduled(1L, 2, 7, 500L, "429");
 
         List<OutputLine> lines = state.drainPending();
         assertEquals(1, lines.size(), lines.toString());
         assertEquals(OutputLine.Kind.INFO, lines.get(0).kind());
-        assertTrue(lines.get(0).text().contains("(2/5·传输)"));
-        assertEquals("↻ 重试中 2/5·传输", state.retryLabel());
+        assertTrue(lines.get(0).text().contains("(2/7·传输)"));
+        assertEquals("↻ 重试中 2/7·传输", state.retryLabel());
         assertTrue(CharWidth.of(state.retryLabel()) <= 17);
         assertEquals("0.5s", state.retryBackoffText());
     }
