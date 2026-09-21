@@ -386,12 +386,18 @@ public final class McpRegistry implements UiChangeSource {
      * <p>运行期 {@code /mcp} 启用的 server 也走这里——故权限层<b>不能</b>改成「装配期一次性包装」，
      * 那会让启动后新启用的 server 漏掉整层。
      *
+     * <p>链自外向内：{@code PermissionCallback → ResilientMcpToolCallback → ToolEventCallback →
+     * 媒体外置 → 真实工具}。{@link ResilientMcpToolCallback} 必须在 {@code ToolEventCallback}
+     * <b>之外</b>（失败先被记成 ok=false，TUI 保留 ✗，再被转成错误文本）、{@code PermissionCallback}
+     * <b>之内</b>（权限拒绝不经它，语义不变）。
+     *
      * <p><b>内部类型</b>：升 public 仅为跨包装配，勿在 agent 包外依赖。
      */
     public ToolCallback decorate(ToolCallback raw) {
         return new PermissionCallback(
-                new ToolEventCallback(
-                        new MediaExternalizingCallback(raw, mediaStore, mediaHandler, root), listener),
+                new ResilientMcpToolCallback(
+                        new ToolEventCallback(
+                                new MediaExternalizingCallback(raw, mediaStore, mediaHandler, root), listener)),
                 permissionEngine, listener);
     }
 

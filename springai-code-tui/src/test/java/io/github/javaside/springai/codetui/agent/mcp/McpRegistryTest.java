@@ -142,7 +142,7 @@ class McpRegistryTest {
     }
 
     /**
-     * 装饰链自外向内：{@code PermissionCallback → ToolEventCallback → 媒体外置 → 真实工具}。
+     * 装饰链自外向内：{@code PermissionCallback → ResilientMcpToolCallback → ToolEventCallback → 媒体外置 → 真实工具}。
      *
      * <p>MCP 工具在登记表里是 UNKNOWN（兜底 ASK），故这里显式给一条 allow 规则——
      * 否则本用例测的就变成「被拒时不发工具事件」了（那是 PermissionCallback 自己的用例）。
@@ -163,6 +163,45 @@ class McpRegistryTest {
             assertEquals("ok", decorated.call("{}"), "调用应穿透装饰链回到原工具");
             assertEquals(List.of("start:mcp__s1__ping", "finish:mcp__s1__ping:true"), listener.events,
                     "装饰后调用应发工具开始/结束事件");
+        } finally {
+            reg.close();
+        }
+    }
+
+    /**
+     * MCP 工具协议错误（server 返回 JSON-RPC error，如 Pencil 未打开文档时的
+     * {@code A file needs to be open in the editor}）不得穿透装饰链炸掉回合：
+     * 错误文本作为调用返回值交给框架构造成 tool 结果回给模型；
+     * 同时 {@code ToolEventCallback} 在更内层，已把这次失败记成 {@code finish:false}
+     * ——TUI 上保留 ✗ 语义，不会把失败误显示成成功。
+     */
+    @Test
+    void decorate_mcpProtocolError_returnsErrorText_andKeepsUiFailMark(@TempDir Path root) {
+        RecordingListener listener = new RecordingListener();
+        PermissionEngine engine = new PermissionEngine(root,
+                new PermissionConfig(PermissionMode.DEFAULT,
+                        List.of(new PermissionRule("mcp__s1__boom", null,
+                                PermissionBehavior.ALLOW, RuleScope.SESSION))),
+                PermissionMode.DEFAULT);
+        McpRegistry reg = McpRegistry.initForTest(root, listener, List.of(), engine);
+        try {
+            ToolCallback boom = new ToolCallback() {
+                @Override public ToolDefinition getToolDefinition() {
+                    return DefaultToolDefinition.builder()
+                            .name("mcp__s1__boom").description("fake")
+                            .inputSchema("{\"type\":\"object\",\"properties\":{}}").build();
+                }
+                @Override public String call(String toolInput) {
+                    throw io.modelcontextprotocol.spec.McpError.builder(-32603)
+                            .message("Failed to access file \"\". A file needs to be open in the editor.").build();
+                }
+            };
+            String out = reg.decorate(boom).call("{}");
+            assertTrue(out.contains("McpError"), "协议错误应转成错误文本返回，实际=" + out);
+            assertTrue(out.contains("A file needs to be open in the editor"),
+                    "应保留原始错误消息供模型对症处理，实际=" + out);
+            assertEquals(List.of("start:mcp__s1__boom", "finish:mcp__s1__boom:false"), listener.events,
+                    "内层 ToolEventCallback 仍应把失败记成 ok=false（TUI 显示 ✗）");
         } finally {
             reg.close();
         }
