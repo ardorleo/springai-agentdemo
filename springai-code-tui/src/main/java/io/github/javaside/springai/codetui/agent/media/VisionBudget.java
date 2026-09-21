@@ -35,8 +35,21 @@ public final class VisionBudget {
     public static final int MAX_USER_IMAGES = 3;
     /** 每请求：工具产图上限（取最新一张）。 */
     public static final int MAX_TOOL_IMAGES = 1;
-    /** 每请求：视觉 token 硬上限。 */
-    public static final long MAX_REQUEST_TOKENS = 6_000L;
+    /**
+     * 每请求：视觉 token 硬上限。
+     *
+     * <p><b>为什么是 16000 而不是原来的 6000</b>：6000 是在「估算器对所有 provider 套用
+     * Anthropic 口径 {@code 宽×高/750}」时定的——那个口径对 DeepSeek 实测高估 3.6 倍
+     * （2442×1146 的截图：旧公式 3731，真机约 1000）。高估 3.6 倍的上限等于把可用张数
+     * 压到 1/3：用户贴 3 张图就撞顶，而真实成本远未到。这正是「额度感觉太少」的根源。
+     *
+     * <p>改成按 provider 估算（见 {@link ImageProfile}）后，同一笔钱能放下的图显著变多，
+     * 因此上限按<b>真实成本</b>重定：典型截图（约 1k token/张）× 6 张 ≈ 6k，留出余量到 16k，
+     * 足以容纳「3 张用户图 + 大尺寸工具图」而不误伤。
+     *
+     * <p>仍<b>必须有界</b>：这是唯一约束单次请求体积的闸门（回合额度约束的是跨轮累计）。
+     */
+    public static final long MAX_REQUEST_TOKENS = 16_000L;
     /** 每回合：工具图累计兑现次数（张·次）上限。工具图每请求只发最新一张，故上限即轮数。 */
     public static final int MAX_TOOL_TURN_DELIVERIES = 12;
     /**
@@ -57,7 +70,10 @@ public final class VisionBudget {
     public static final String TOOL_TURN_BUDGET_ENV = "CODETUI_VISION_TURN_BUDGET";
     /** 覆盖「用户图」回合额度的环境变量；长回合里贴图多时放宽。 */
     public static final String USER_TURN_BUDGET_ENV = "CODETUI_VISION_USER_TURN_BUDGET";
+    /** 覆盖「每请求视觉 token」上限的环境变量。 */
+    public static final String REQUEST_TOKENS_ENV = "CODETUI_VISION_REQUEST_TOKENS";
 
+    private final long requestTokenCap;
     private final int toolTurnDeliveries;
     private final int userTurnDeliveries;
     private final Map<String, AtomicInteger> perTurn = new ConcurrentHashMap<>();
@@ -66,18 +82,40 @@ public final class VisionBudget {
     private volatile String lastTurnKey;
 
     public VisionBudget() {
-        this(resolveBudget(System.getenv(TOOL_TURN_BUDGET_ENV), MAX_TOOL_TURN_DELIVERIES),
+        this(resolveRequestTokens(System.getenv(REQUEST_TOKENS_ENV)),
+                resolveBudget(System.getenv(TOOL_TURN_BUDGET_ENV), MAX_TOOL_TURN_DELIVERIES),
                 resolveBudget(System.getenv(USER_TURN_BUDGET_ENV), MAX_USER_TURN_DELIVERIES));
     }
 
     /** 单值构造：工具图与用户图同额（测试用，便于把两边一起调小）。 */
     public VisionBudget(int turnDeliveries) {
-        this(turnDeliveries, turnDeliveries);
+        this(MAX_REQUEST_TOKENS, turnDeliveries, turnDeliveries);
     }
 
     public VisionBudget(int toolTurnDeliveries, int userTurnDeliveries) {
+        this(MAX_REQUEST_TOKENS, toolTurnDeliveries, userTurnDeliveries);
+    }
+
+    public VisionBudget(long requestTokenCap, int toolTurnDeliveries, int userTurnDeliveries) {
+        this.requestTokenCap = requestTokenCap <= 0 ? MAX_REQUEST_TOKENS : requestTokenCap;
         this.toolTurnDeliveries = toolTurnDeliveries < 0 ? MAX_TOOL_TURN_DELIVERIES : toolTurnDeliveries;
         this.userTurnDeliveries = userTurnDeliveries < 0 ? MAX_USER_TURN_DELIVERIES : userTurnDeliveries;
+    }
+
+    /** 本实例的每请求 token 上限。 */
+    public long requestTokenCap() {
+        return requestTokenCap;
+    }
+
+    /** 解析每请求 token 上限的环境变量值；非法/未设回落默认。 */
+    public static long resolveRequestTokens(String raw) {
+        if (raw == null || raw.isBlank()) return MAX_REQUEST_TOKENS;
+        try {
+            long v = Long.parseLong(raw.trim());
+            return v > 0 ? v : MAX_REQUEST_TOKENS;
+        } catch (NumberFormatException e) {
+            return MAX_REQUEST_TOKENS;
+        }
     }
 
     /**
@@ -118,7 +156,7 @@ public final class VisionBudget {
     /** 开一次「本请求」的预算会话。<b>用户图与工具图各一套计数器</b>，互不挤占。 */
     public Session open(String turnKey) {
         lastTurnKey = turnKey;
-        return new Session(counter(perTurn, turnKey), toolTurnDeliveries,
+        return new Session(requestTokenCap, counter(perTurn, turnKey), toolTurnDeliveries,
                 counter(perTurnUser, turnKey), userTurnDeliveries);
     }
 
@@ -153,14 +191,16 @@ public final class VisionBudget {
     /** 单次请求内的预算账本。非线程安全——一次 materialize 只在一个线程里跑完。 */
     public static final class Session {
 
+        private final long requestTokenCap;
         private final AtomicInteger toolCounter;
         private final int toolLimit;
         private final AtomicInteger userCounter;
         private final int userLimit;
         private long requestTokens;
 
-        private Session(AtomicInteger toolCounter, int toolLimit,
+        private Session(long requestTokenCap, AtomicInteger toolCounter, int toolLimit,
                         AtomicInteger userCounter, int userLimit) {
+            this.requestTokenCap = requestTokenCap;
             this.toolCounter = toolCounter;
             this.toolLimit = toolLimit;
             this.userCounter = userCounter;
@@ -169,7 +209,7 @@ public final class VisionBudget {
 
         /** 本请求的 token 预算还容得下这张图吗？容得下则记账并返回 true。 */
         public boolean admit(long tokens) {
-            if (requestTokens + tokens > MAX_REQUEST_TOKENS) {
+            if (requestTokens + tokens > requestTokenCap) {
                 return false;
             }
             requestTokens += tokens;

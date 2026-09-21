@@ -26,6 +26,7 @@ import io.github.javaside.springai.codetui.agent.media.MediaReferencePreservingC
 import io.github.javaside.springai.codetui.agent.media.SessionFileExternalizer;
 import io.github.javaside.springai.codetui.agent.media.TextReferenceMediaHandler;
 import io.github.javaside.springai.codetui.agent.media.ToolResultMediaHandler;
+import io.github.javaside.springai.codetui.agent.media.ImageProfile;
 import io.github.javaside.springai.codetui.agent.media.VisionBudget;
 import io.github.javaside.springai.codetui.agent.media.VisionMaterializingChatModel;
 import io.github.javaside.springai.codetui.agent.permission.PermissionConfig;
@@ -674,10 +675,13 @@ public final class AgentTools {
                     : provider.chatModel();
             // 与工具侧（MediaExternalizingCallback）共用同一个 visionBudget 实例：出站兑现开回合、
             // 工具读图查同一桶，两侧额度口径才一致。
+            // 图像规格按 provider 取：长边上限与 token 口径各家不同（见 ImageProfile），统一套用
+            // Anthropic 口径会让 DeepSeek 的 token 被高估 3.6 倍、把额度白白吃光。
             VisionMaterializingChatModel visionModel = VisionMaterializingChatModel.wrap(
                     base, root,
                     modelId -> provider.capabilities(modelId).supportsImageInput(),
-                    visionBudget);
+                    visionBudget,
+                    ImageProfile.forProvider(provider.id()));
             visionModels.put(provider.id(), visionModel);
             // 插话注入包在<b>最外层</b>：位置必须在整条 advisor 链下游，才拿得到已配平的完整消息表
             // （工具结果落库与「构建下一次 prompt」是同一步，会话存储层看不到这个位置）。

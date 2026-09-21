@@ -1080,7 +1080,7 @@ tool 走 `synthesise` 造一条 user 消息（`ToolResponseMessage` 没有 media
 短路条件是「什么都没改」而**不是**「什么都没兑现」：一张都没兑现但有引用被判超预算时，
 delivery 行仍必须改写，否则模型拿到「Read 一次就能看」这句假话。
 
-**预算** `VisionBudget`：每请求分来源配额（user 3 / tool 1）+ token 6000，每回合累计 12 张。
+**预算** `VisionBudget`：每请求分来源配额（user 3 / tool 1）+ token 16000，每回合累计 12 张。token 与长边按 provider 各自口径（`ImageProfile`）。
 分来源的理由：用户一次贴 1–3 张是他这一轮的全部意图，截图循环一个回合能产几十张且旧的几乎无价值；
 一视同仁按「从新到旧」取会让「照这张稿子改」的稿子被随后 Read 的图挤掉。
 **按 turnKey 分桶是正确性需要**：ChatModel 实例被主 agent 与所有子 agent 共用。

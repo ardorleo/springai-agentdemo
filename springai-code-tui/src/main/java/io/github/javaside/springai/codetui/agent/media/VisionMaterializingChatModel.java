@@ -57,8 +57,21 @@ public final class VisionMaterializingChatModel implements ChatModel {
     public static VisionMaterializingChatModel wrap(ChatModel delegate, Path root,
                                                      Predicate<String> supportsImage,
                                                      VisionBudget budget) {
+        return wrap(delegate, root, supportsImage, budget, ImageProfile.CONSERVATIVE);
+    }
+
+    /**
+     * 用<b>指定规格</b>装配（长边上限 + token 口径，见 {@link ImageProfile}）。
+     *
+     * <p>各家的出站分辨率与计费口径差别很大：统一按 Anthropic 的 1568 / {@code 宽×高/750}
+     * 处理，对 DeepSeek 会高估 token 3.6 倍（额度被白白吃光），对 OpenAI/通义又是净丢细节。
+     */
+    public static VisionMaterializingChatModel wrap(ChatModel delegate, Path root,
+                                                     Predicate<String> supportsImage,
+                                                     VisionBudget budget,
+                                                     ImageProfile profile) {
         return new VisionMaterializingChatModel(
-                delegate, new VisionMaterializer(root, new ImagePreparer(), budget), supportsImage);
+                delegate, new VisionMaterializer(root, new ImagePreparer(profile), budget), supportsImage);
     }
 
     /** 供 {@code /context} 之外的调用方读取本实例的预算（测试与装配自检用）。 */

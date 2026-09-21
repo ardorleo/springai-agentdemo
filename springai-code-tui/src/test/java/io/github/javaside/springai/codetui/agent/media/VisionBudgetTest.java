@@ -18,10 +18,11 @@ class VisionBudgetTest {
     void tokenCapStopsAdmittingFurtherImages() {
         VisionBudget b = new VisionBudget();
         VisionBudget.Session s = b.open("turn-1");
-        assertTrue(s.admit(5_000));
+        long cap = VisionBudget.MAX_REQUEST_TOKENS;
+        assertTrue(s.admit(cap - 1_000), "接近上限仍应放行");
         // 超出上限的那张被拒，但不应把额度扣掉——否则一张大图会连带废掉后面所有小图
-        assertFalse(s.admit(2_000));
-        assertTrue(s.admit(500));
+        assertFalse(s.admit(2_000), "越过上限应被拒");
+        assertTrue(s.admit(500), "被拒后剩余额度仍可用");
     }
 
     @Test

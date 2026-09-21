@@ -44,7 +44,13 @@ public final class ImagePreparer {
 
     private static final Logger log = LoggerFactory.getLogger(ImagePreparer.class);
 
-    /** 长边上限（Anthropic 建议值）。4K 截图缩到这个尺寸对「看报错」零损失。 */
+    /**
+     * 默认长边上限（口径未知时使用）。
+     *
+     * <p>实际出站长边由 {@link ImageProfile#maxEdge()} 决定——各家能接受的分辨率差别很大
+     * （DeepSeek 约 1300、Anthropic 标准档 1568、OpenAI 2048、通义 8K）。本常量只作
+     * 无 profile 时的兜底，测试与旧调用点仍可用。
+     */
     public static final int MAX_EDGE = 1568;
     /** 像素上限：超过即拒绝，防解码 OOM。 */
     public static final long MAX_PIXELS = 50L * 1000 * 1000;
@@ -60,10 +66,26 @@ public final class ImagePreparer {
     private static final Set<String> PASS_THROUGH = Set.of("image/webp");
 
     private final Map<String, PreparedImage> cache = new ConcurrentHashMap<>();
+    /** 本实例的 provider 图像规格：决定长边上限与 token 口径（见 {@link ImageProfile}）。 */
+    private final ImageProfile profile;
 
     /** 整图解码次数。存在的唯一理由是让「超限图必须在解码<b>之前</b>被拒」这条不变式可断言——
      *  只看返回值区分不了「拒在解码前」和「解码完再拒」，而两者的差别正是 OOM 与不 OOM。 */
     private final AtomicInteger decodeCount = new AtomicInteger();
+
+    /** 默认档（口径未知的保守估算），等价于 {@code ImageProfile.CONSERVATIVE}。 */
+    public ImagePreparer() {
+        this(ImageProfile.CONSERVATIVE);
+    }
+
+    public ImagePreparer(ImageProfile profile) {
+        this.profile = profile == null ? ImageProfile.CONSERVATIVE : profile;
+    }
+
+    /** 本实例使用的规格（供装配自检与统计）。 */
+    public ImageProfile profile() {
+        return profile;
+    }
 
     /** @see #decodeCount */
     int decodeCount() {
@@ -75,7 +97,7 @@ public final class ImagePreparer {
         try {
             if (!Files.isRegularFile(file)) return Optional.empty();
             String key = file.toAbsolutePath() + "|" + Files.getLastModifiedTime(file).toMillis()
-                    + "|" + MAX_EDGE;
+                    + "|" + profile.maxEdge();
             PreparedImage hit = cache.get(key);
             if (hit != null) return Optional.of(hit);
 
@@ -104,8 +126,8 @@ public final class ImagePreparer {
             // 缩不了的格式，字节上限只能靠文件大小判——先看 size 再读，别把超限文件先搬进内存。
             if (Files.size(file) > MAX_BYTES) return Optional.empty();
             byte[] raw = Files.readAllBytes(file);
-            int[] wh = headerSize(file).orElse(new int[]{MAX_EDGE, MAX_EDGE});
-            return Optional.of(new PreparedImage(raw, mime, wh[0], wh[1], tokensOf(wh[0], wh[1])));
+            int[] wh = headerSize(file).orElse(new int[]{profile.maxEdge(), profile.maxEdge()});
+            return Optional.of(new PreparedImage(raw, mime, wh[0], wh[1], profile.estimateTokens(wh[0], wh[1])));
         }
         boolean scalable = SCALABLE.contains(mime);
         boolean transcode = TRANSCODE_TO_PNG.contains(mime);
@@ -120,25 +142,25 @@ public final class ImagePreparer {
 
         // 原件字节只在「原样发」这条路上才需要；要缩/要转码时 ImageIO 直接读文件，
         // 提前 readAllBytes 只是白白多占一份大数组。
-        boolean needScale = Math.max(wh[0], wh[1]) > MAX_EDGE;
+        boolean needScale = Math.max(wh[0], wh[1]) > profile.maxEdge();
         if (!needScale && !transcode && Files.size(file) <= MAX_BYTES) {
             byte[] raw = Files.readAllBytes(file);
-            return Optional.of(new PreparedImage(raw, mime, wh[0], wh[1], tokensOf(wh[0], wh[1])));
+            return Optional.of(new PreparedImage(raw, mime, wh[0], wh[1], profile.estimateTokens(wh[0], wh[1])));
         }
 
         decodeCount.incrementAndGet();
         BufferedImage src = ImageIO.read(file.toFile());
         if (src == null) return Optional.empty();
-        int[] target = fit(src.getWidth(), src.getHeight(), MAX_EDGE);
+        int[] target = fit(src.getWidth(), src.getHeight(), profile.maxEdge());
         byte[] out = encode(scale(src, target[0], target[1]), "png");
         if (out.length > MAX_BYTES) {                                // 仍超：转 JPEG 压一次
             out = encode(scale(src, target[0], target[1]), "jpg");
             if (out.length > MAX_BYTES) return Optional.empty();
             return Optional.of(new PreparedImage(out, "image/jpeg", target[0], target[1],
-                    tokensOf(target[0], target[1])));
+                    profile.estimateTokens(target[0], target[1])));
         }
         return Optional.of(new PreparedImage(out, "image/png", target[0], target[1],
-                tokensOf(target[0], target[1])));
+                profile.estimateTokens(target[0], target[1])));
     }
 
     /** 只读文件头拿尺寸，<b>不解码整图</b>。这是 OOM 防护的关键一步。 */
@@ -193,7 +215,13 @@ public final class ImagePreparer {
         return bo.toByteArray();
     }
 
-    /** 视觉 token 估算（Anthropic 口径 宽×高/750）。只用于预算，不求各家精确。 */
+    /**
+     * 视觉 token 估算（宽×高/750，Anthropic 口径）。
+     *
+     * @deprecated 这是<b>对所有 provider 套用同一公式</b>的旧口径，对 DeepSeek 实测高估 3.6 倍。
+     *     改用 {@link ImageProfile#estimateTokens(int, int)}，各家用各自口径。
+     */
+    @Deprecated
     static long tokensOf(int w, int h) {
         return Math.max(1L, (long) w * h / 750L);
     }

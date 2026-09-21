@@ -292,15 +292,21 @@ class VisionMaterializerTest {
      * 上面那条 4 张小图从没碰过 {@code session.admit}，只在张数上溢出；
      * 这条两张大图没超张数配额，是第二张的 token 越了每请求上限。
      * 少了这条，{@code admit} 返回 false 那个分支的标注就是无人验证的。
+     *
+     * <p>用<b>小上限</b>的预算实例来构造该局面：默认上限 16000 高于「3 用户图 + 1 工具图」
+     * 的真实成本（每请求最多 4 张，约 4–13k），正常路径根本触发不到这个分支。
      */
     @Test
     void tokenBudgetOverflowIsMarkedBudgetExceeded() throws Exception {
-        // 长边不超过 MAX_EDGE 故不缩放，token 按原尺寸算：1568×1500/750 ≈ 3136，两张即超 6000。
         bigPng("big1.png"); bigPng("big2.png");
         String text = "两张大图\n" + ref("big1.png", "big1.png") + "\n" + ref("big2.png", "big2.png");
         Prompt p = new Prompt(List.of(new UserMessage(text)));
 
-        String out = materializer().materialize(p, true).getInstructions().get(0).getText();
+        // 单张约 3136 token（1568×1500/750，CONSERVATIVE 档不缩放）→ 上限 4000 只放得下一张
+        VisionMaterializer m = new VisionMaterializer(root, new ImagePreparer(),
+                new VisionBudget(4_000L, VisionBudget.MAX_TOOL_TURN_DELIVERIES,
+                        VisionBudget.MAX_USER_TURN_DELIVERIES));
+        String out = m.materialize(p, true).getInstructions().get(0).getText();
 
         assertEquals(1, countOccurrences(out, "delivery: " + FileReference.DELIVERY_DELIVERED),
                 "token 预算只容得下一张：\n" + out);
