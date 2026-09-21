@@ -344,8 +344,8 @@ Agent/source mutation          Agent 线程 / 工具线程 / MCP 后台线程改
 | `/context` | `ctxUsage.report()` | 无（任何时刻可查） |
 | `/skill` | `openSkillPicker()` | — |
 | `/skills` | `printSkills()` | 无 |
-| `/reload` | `reloadSkills()` | — |
-| `/mcp` | `openMcpPicker()` | 仅空闲 |
+| `/reload` | `reloadSkills()`（技能 + MCP 配置，后者仅空闲） | MCP 部分忙碌时跳过并提示 |
+| `/mcp` | `openMcpPicker()`（面板内 `r` 键 = `reloadMcpConfig()`） | 仅空闲 |
 | `/permissions` | `printPermissions()` + `openPermsPanel()` | 无 |
 | `/tasks` | `openTasksPanel()` | **刻意无闸门**（后台任务与回合两套线程，忙时恰是最想看的时刻） |
 | `/continue` | 固定提示词 + `backgroundDigestForContinue()` | 忙则 enqueue |
@@ -749,23 +749,35 @@ macOS firmlink 使 `toRealPath()` 实测不收敛、`~` 刻意不展开、别人
 MCP 工具在 `ToolRegistry` 里**永远是 UNKNOWN**，判定目标是整串入参 → 模式默认落兜底 ASK
 （PLAN 下 DENY），建议规则只给 `工具名(*)`。
 
-### 10.2 启动期后台并行连接
+### 10.2 启动与 reload 共用的后台并行连接
 
-`connectEnabledInParallel`：`min(n,8)` daemon 线程池、`runAsync` **刻意不 join**、`init` 立即返回。
-可以不等的依据是主 agent 每回合重新快照 `activeTools()`；而等它连完的代价是实测的
-（一个远程 server 5~8 秒，那几秒屏幕是空的）。
+`connectInBackground(条目集合)`：`min(n,8)` daemon 线程池、`runAsync` **刻意不 join**、立即返回
+（启动入口 `connectEnabledInParallel` 与 reload 都调它，连接池收进 `connectPools` 列表——
+reload 与启动重叠时 close 能一并 shutdownNow）。可以不等的依据是主 agent 每回合重新快照
+`activeTools()`；而等它连完的代价是实测的（一个远程 server 5~8 秒，那几秒屏幕是空的）。
 
-`publishStartupResult` 是唯一发布点，**两道丢弃检查都在 `synchronized(this)` 内**：
-`closed` 为真 → 当场 `closeQuietly` 不写回（不查就是漏孤儿子进程）；`!e.enabled` → 用户在连接
-在飞期间禁用了它，写回等于把禁用悄悄复活。这里靠「写回时复查意图」而**不是**去争 `toggleLock`
-（那会让 `/mcp` 面板操作卡好几秒）。无论走哪条路 `connecting` 都递减，归零时回调 `onMcpReady`。
+`publishStartupResult` 是唯一发布点，**丢弃检查都在 `synchronized(this)` 内**，分两层：
+普适两道（`writebackOrphaned`：`closed` 为真 → 当场 `closeQuietly` 不写回，不查就是漏孤儿
+子进程；`entries.get(name) != e` → 该 Entry 已被 reload 替换/移除，写回要么是孤儿、要么拿旧
+配置的产物冒充新配置的）+ 本路径专属一道（`!e.enabled` → 用户在连接在飞期间禁用了它，写回
+等于把禁用悄悄复活——**只对启动/reload 发起的连接成立**，enable 路径发起时 `e.enabled`
+本来就是 false，查它等于全部误伤，见 `writebackOrphaned` 的 javadoc）。这里靠「写回时复查意图」
+而**不是**去争 `toggleLock`（那会让 `/mcp` 面板操作卡好几秒）。无论走哪条路 `connecting`
+都递减，归零时回调 `onMcpReady`。
 
-### 10.3 运行期启停
+### 10.3 运行期启停与 reload
 
 **锁序：`toggleLock` 外、`this` 内。** 连接（秒级阻塞）留在 `this` 锁外，不挡 `servers()` 读。
 
 - `enable`：连接 → 回写 `enabled:true`（**连接失败也回写**，用户意图是启用，下次启动自动重试）。
+  写回前过 `writebackOrphaned`（enable 在飞时条目被 reload 替换或进程退出，写回就是孤儿）。
 - `disable`：`this` 内摘 client/tools/enabled（下回合快照即不含）→ 锁外起 daemon 线程优雅关 → 回写。
+- `reload()`（`/reload` 与 `/mcp` 面板 `r` 键）：diff 持 `toggleLock`（毫秒级，防与启停交错
+  重复关同一 client）——按名字分四类：**新增**入表、enabled 则后台连接；**删除**摘工具
+  关连接移出表；**同名配置变**（record equals，含 enabled 意图）换 Entry 重连，在飞旧连接的
+  迟到写回被替换守卫丢弃；**未变**原样保留（已连接的不闪断）。diff 比较的是「装载时配置 vs
+  文件现值」，所以 `/mcp` toggle 回写失败时运行期选择不会被 reload 打掉。秒级连接在两把锁外
+  走 `connectInBackground`。测试接缝：显式列表重载 `reload(List)`（同 `initForTest` 理由）。
 - `servers()` 的状态判定**顺序要紧**：`connecting` 必须排在 FAILED 之前，
   否则启动头几秒会一律显示成「连接失败」——那是在报一个还没发生的错。
 - `close()`：**`closed` 必须先置位、再收集**——反过来会留一个窗口，那一瞬间连上的 client

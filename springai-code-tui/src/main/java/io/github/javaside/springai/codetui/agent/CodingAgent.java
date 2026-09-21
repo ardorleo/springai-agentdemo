@@ -1003,6 +1003,11 @@ public final class CodingAgent implements SubmitHandler {
     }
 
     @Override
+    public McpRegistry.ReloadResult reloadMcp() {
+        return mcpRegistry == null ? null : mcpRegistry.reload();
+    }
+
+    @Override
     public List<ProviderModel> models() {
         if (registry != null) {
             return registry.allModels();

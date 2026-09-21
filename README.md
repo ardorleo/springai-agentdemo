@@ -133,7 +133,7 @@ Agent 需要 UI。JLine 3 的 `TerminalBasics` 是一个单文件示例，按 `T
 | 工具调用（第 2 步） | 文件读写、Shell、Grep/Glob、联网搜索（需另配搜索 Key）、网页抓取 |
 | 多步 Agent（第 2 步） | 自动规划并连续调用工具完成编码任务 |
 | 对话记忆（第 2 步） | 升级为事件溯源会话（每轮对话当事件追加存储、可重放）+ 自动压缩（接入 Advisor 链），另有跨会话长期记忆与 `AGENTS.md` 项目指令，详见模块 README |
-| MCP（第 3 步） | 本地 stdio + 远程 Streamable HTTP，`/mcp` 面板支持运行期启停 |
+| MCP（第 3 步） | 本地 stdio + 远程 Streamable HTTP，`/mcp` 面板运行期启停，`/reload` / 面板 `r` 键重载配置（无需重启） |
 | 终端基础（第 4 步） | 单栏对话式 TUI：流式输出、计划面板、任务面板、状态栏 |
 
 另有学习路线之外的进阶能力：多 provider 切换、子 Agent（`Task`/`ParallelTasks` 并发委派）、

@@ -203,6 +203,13 @@ public interface SubmitHandler {
      */
     default McpRegistry.ToggleResult disableMcp(String name) { return null; }
 
+    /**
+     * 重载两层 {@code mcp.json}（{@code /reload} 与 {@code /mcp} 面板 r 键；diff 语义见
+     * {@link McpRegistry#reload()}——新增/删除/参数变更即时生效，未变条目不闪断）。
+     * 新起连接在后台，本方法本身毫秒级返回。null 表示无 MCP 支持。
+     */
+    default McpRegistry.ReloadResult reloadMcp() { return null; }
+
     // ── 权限管理（/permissions 与 Shift+Tab 用；默认空实现，便于回显桩/测试桩省略） ──
     /** 当前权限模式（状态栏与面板显示）。默认非空，状态栏不必判 null。 */
     default PermissionMode permissionMode() { return PermissionMode.DEFAULT; }

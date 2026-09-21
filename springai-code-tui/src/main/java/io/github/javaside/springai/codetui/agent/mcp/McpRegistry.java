@@ -19,6 +19,7 @@ import org.springframework.ai.tool.ToolCallback;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -83,6 +84,15 @@ public final class McpRegistry implements UiChangeSource {
      */
     public record ToggleResult(boolean applied, boolean persisted, String error) { }
 
+    /** reload 结果四计数（UI 打一行摘要：新增 X · 移除 Y · 重连 Z）。
+     *
+     * @param added     文件新增的条目数（enabled 与否都算）
+     * @param removed   文件已删、被移出表的条目数
+     * @param replaced  同名但配置（含 enabled 意图）变化、被替换重连的条目数
+     * @param unchanged 配置未变、原样保留（连接不闪断）的条目数
+     */
+    public record ReloadResult(int added, int removed, int replaced, int unchanged) { }
+
     private static final class Entry {
         final McpConfigLoader.LoadedServer loaded;
         boolean enabled;
@@ -114,8 +124,10 @@ public final class McpRegistry implements UiChangeSource {
      */
     private volatile boolean closed;
 
-    /** 启动期后台连接池；{@link #close()} 要 shutdownNow 它，否则退出要等最慢的那个 server。 */
-    private volatile ExecutorService startupPool;
+    /** 启动/reload 后台连接池；{@link #close()} 要 shutdownNow 它们，否则退出要等最慢的 server。
+     * 是列表：reload 与启动期连接重叠时各有各的池，close 一并掐。 */
+    private final java.util.List<ExecutorService> connectPools =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
 
     /** 启动期还在连的条目数（供状态栏「⟳ MCP 连接中 N」）。归零时回调一次 onMcpReady。 */
     private final java.util.concurrent.atomic.AtomicInteger connecting =
@@ -232,15 +244,29 @@ public final class McpRegistry implements UiChangeSource {
      * {@link #publishStartupResult}，在 this 锁内做；连接本身留在锁外（秒级，锁住会挡死读）。
      */
     private void connectEnabledInParallel() {
-        List<Entry> toConnect = entries.values().stream().filter(e -> e.enabled).toList();
+        connectInBackground(entries.values().stream().filter(e -> e.enabled).toList());
+    }
+
+    /**
+     * 对给定条目集合起后台并行连接，<b>不等连完</b>——启动与 reload 共用。
+     *
+     * <p><b>为什么可以不等</b>：{@code CodingAgent.submit} 每回合都重新快照 {@link #activeTools()}，
+     * 工具晚到几秒只影响这几秒内发出的回合，不影响之后任何一回合。而等它连完的代价是实测的：
+     * 一个远程 HTTP server（context7）就要 5~8 秒，那几秒里屏幕是空的。
+     *
+     * <p><b>此处再也不能说「无并发访问，不加锁」了</b>——原来的写法靠 join 保证写回发生在
+     * 任何读之前，现在写回与 {@code servers()}/{@code activeTools()} 真并发。写回走
+     * {@link #publishStartupResult}，在 this 锁内做；连接本身留在锁外（秒级，锁住会挡死读）。
+     */
+    private void connectInBackground(Collection<Entry> toConnect) {
         if (toConnect.isEmpty()) {
             return;
         }
         for (Entry e : toConnect) {
             e.connecting = true;
         }
-        connecting.set(toConnect.size());
-        // connecting 进入的通知在状态置位<b>之后</b>（此处本来就在 this 锁外——entries 直改是 init 的单线程前提）：
+        connecting.addAndGet(toConnect.size());
+        // connecting 进入的通知在状态置位<b>之后</b>（此处本来就在 this 锁外——调用方保证表已更新完）：
         // listener 醒来回读的就是「已经是 CONNECTING」的面板快照，而不是先被唤醒再看到状态翻转。
         // 顺序反过来的话，Task 7 的接线会复刻出「先唤醒、后改状态」的一帧闪烁，这里把它钉死。
         publish(changed());
@@ -249,7 +275,7 @@ public final class McpRegistry implements UiChangeSource {
             t.setDaemon(true);
             return t;
         });
-        startupPool = pool;
+        connectPools.add(pool);
         for (Entry e : toConnect) {
             CompletableFuture.runAsync(() -> connectAndDiscover(e), pool);   // 刻意不 join
         }
@@ -319,15 +345,30 @@ public final class McpRegistry implements UiChangeSource {
     }
 
     /**
-     * 启动期连接结果的发布点。<b>两道丢弃检查都在锁内做</b>：
+     * 写回复查（synchronized(this) 内调用）——普适两道守卫，命中即<b>不写回</b>：
      *
      * <ul>
      *   <li><b>已 close</b>：进程要退了，这个刚连上的 client 没人会再关它——当场关掉，别写回。
      *       不查这一下就是漏孤儿子进程。</li>
-     *   <li><b>已被 /mcp 禁用</b>：用户在连接在飞期间把它关了，写回等于把禁用悄悄复活
-     *       （与 {@code enable/disable} 用 toggleLock 防的是同一件事，这里靠「写回时复查意图」达成，
-     *       不必让启动连接去争 toggleLock——那会让 /mcp 面板操作卡上好几秒）。</li>
+     *   <li><b>Entry 已被 reload 替换/移除</b>（{@code entries.get(name) != e}）：闭包里的旧 Entry
+     *       已不在表里，写回要么不可见（无害但 client 没人关），要么覆盖替换后的新条目（旧配置的
+     *       工具冒充新配置的）。丢弃并当场关掉。</li>
      * </ul>
+     *
+     * <p>「已被 /mcp 禁用」（{@code !e.enabled}）<b>不在</b>普适两道里：它只对启动/reload 发起的
+     * 连接有意义（那些连接发起时条目必然 enabled，写回时变 false 才意味着被禁用）；而 enable
+     * 路径发起连接时 {@code e.enabled} 本来就还是 false（写回正是要置 true 的动作），查它等于
+     * 全部误伤。enable 期间的禁用竞态由 toggleLock 串行化防住，不需要这道守卫。
+     */
+    private synchronized boolean writebackOrphaned(Entry e) {
+        return closed || entries.get(e.loaded.config().name()) != e;
+    }
+
+    /**
+     * 后台连接结果的发布点（启动期与 reload 共用）。<b>丢弃检查在锁内做</b>：普适两道
+     * （{@link #writebackOrphaned}）+ 本路径专属的「已被禁用」——启动/reload 连接发起时条目
+     * 必然 enabled，写回时翻 false 意味着用户在连接在飞期间从 /mcp 关掉了它，写回等于把禁用
+     * 悄悄复活。
      *
      * <p>无论走哪条路，{@code connecting} 计数都要递减：状态栏和 onMcpReady 都靠它。
      */
@@ -335,7 +376,7 @@ public final class McpRegistry implements UiChangeSource {
         McpSyncClient orphan = null;
         synchronized (this) {
             e.connecting = false;
-            if (closed || !e.enabled) {
+            if (writebackOrphaned(e) || !e.enabled) {
                 orphan = c.client();
             } else {
                 e.client = c.client();
@@ -461,15 +502,111 @@ public final class McpRegistry implements UiChangeSource {
         return result;
     }
 
-    /** 运行期写回策略：连接在 this 锁外做（阻塞秒级），仅结果发布时短暂持锁（调用方持 toggleLock）。 */
+    /** 运行期写回策略：连接在 this 锁外做（阻塞秒级），仅结果发布时短暂持锁（调用方持 toggleLock）。
+     * 写回前过 {@link #writebackOrphaned} 普适两道——enable 在飞时条目被 reload 替换或进程
+     * 退出，写回就是孤儿/僵尸，与启动期连接同一类风险（原来只挡了启动期一条路）。
+     * 「被禁用」不在检查里，见 {@link #writebackOrphaned} 的说明。 */
     private void connectAndPublish(Entry e) {
         Connected c = connect(e);
+        McpSyncClient orphan = null;
         synchronized (this) {
-            e.enabled = true;
-            e.client = c.client();
-            e.tools = c.tools();
-            e.error = c.error();
+            if (writebackOrphaned(e)) {
+                orphan = c.client();
+            } else {
+                e.enabled = true;
+                e.client = c.client();
+                e.tools = c.tools();
+                e.error = c.error();
+            }
         }
+        if (orphan != null) {
+            closeQuietly(orphan);
+        }
+    }
+
+    /**
+     * 运行期重载两层 {@code mcp.json}（/reload 与 /mcp 面板 r 键）——改配置文件不再需要重启。
+     *
+     * <p><b>diff 语义（按名字）</b>：新增条目入表、enabled 则后台连接；删除条目摘工具关连接移出表；
+     * 同名但配置（record equals，含 enabled 意图）变化则换 Entry 重连；未变的原样保留——已连接的
+     * <b>不闪断</b>。enabled 意图以文件为准（手改 {@code enabled} 也生效）。
+     *
+     * <p><b>与 toggle 回写失败的交互</b>：{@code /mcp} 切换回写失败时文件保留装载时的旧值，
+     * diff 比较「装载时配置 vs 文件现值」相等 → 走 unchanged，运行期的启停状态保留——reload
+     * 不把用户在面板里做的选择打掉。
+     *
+     * <p><b>并发</b>：diff 与表更新持 toggleLock（毫秒级，防与 enable/disable 交错重复关同一
+     * client）；秒级连接在两把锁外后台并行（{@link #connectInBackground}），在飞旧连接的迟到
+     * 写回由 {@link #writebackOrphaned} 的替换守卫丢弃。
+     */
+    public ReloadResult reload() {
+        return reload(McpConfigLoader.loadAll(root));
+    }
+
+    /** 显式列表版（测试入口，同 {@code initForTest} 理由：不读真实两层文件，避免 user.home 污染）。 */
+    public ReloadResult reload(List<McpConfigLoader.LoadedServer> fresh) {
+        List<Entry> toConnect = new ArrayList<>();
+        List<McpSyncClient> toClose = new ArrayList<>();
+        int added = 0, removed = 0, replaced = 0, unchanged = 0;
+        synchronized (toggleLock) {
+            synchronized (this) {
+                java.util.Set<String> freshNames = new java.util.LinkedHashSet<>();
+                for (McpConfigLoader.LoadedServer l : fresh) {
+                    freshNames.add(l.config().name());
+                }
+                // 删除：表里有、文件没有
+                var it = entries.values().iterator();
+                while (it.hasNext()) {
+                    Entry e = it.next();
+                    if (!freshNames.contains(e.loaded.config().name())) {
+                        if (e.client != null) {
+                            toClose.add(e.client);
+                        }
+                        it.remove();
+                        removed++;
+                    }
+                }
+                // 新增 / 替换 / 未变（按文件的插入序重排，面板顺序跟文件走）
+                Map<String, Entry> reordered = new LinkedHashMap<>();
+                for (McpConfigLoader.LoadedServer l : fresh) {
+                    String name = l.config().name();
+                    Entry old = entries.get(name);
+                    if (old == null) {
+                        Entry e = new Entry(l);
+                        added++;
+                        if (e.enabled) {
+                            toConnect.add(e);
+                        }
+                        reordered.put(name, e);
+                    } else if (!old.loaded.config().equals(l.config())) {
+                        // 参数或 enabled 意图变化：换 Entry（旧连接后台关，新配置后台连）
+                        if (old.client != null) {
+                            toClose.add(old.client);
+                        }
+                        Entry e = new Entry(l);
+                        replaced++;
+                        if (e.enabled) {
+                            toConnect.add(e);
+                        }
+                        reordered.put(name, e);
+                    } else {
+                        unchanged++;
+                        reordered.put(name, old);
+                    }
+                }
+                entries.clear();
+                entries.putAll(reordered);
+            }
+        }
+        // 收尾在两把锁外：关旧连接有界（closeAll 的 2s 预算）、新连接后台、面板刷新
+        if (!toClose.isEmpty()) {
+            Thread t = new Thread(() -> McpClientManager.closeAll(toClose), "mcp-reload-close");
+            t.setDaemon(true);
+            t.start();
+        }
+        connectInBackground(toConnect);
+        publish(changed());
+        return new ReloadResult(added, removed, replaced, unchanged);
     }
 
     /** 禁用：摘除工具（下回合快照即不含）+ 后台优雅关连接 + 回写 enabled:false。即时完成
@@ -523,8 +660,7 @@ public final class McpRegistry implements UiChangeSource {
      */
     public void close() {
         closed = true;
-        ExecutorService pool = startupPool;
-        if (pool != null) {
+        for (ExecutorService pool : connectPools) {
             pool.shutdownNow();
         }
         List<McpSyncClient> toClose;

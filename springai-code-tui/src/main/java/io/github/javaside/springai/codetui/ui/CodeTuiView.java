@@ -308,6 +308,7 @@ public final class CodeTuiView extends InlineApp {
     private boolean taskExpanded;                                    // Enter 展开选中任务的结果正文
     private String taskPendingKill;                                  // 非 null = 终止确认态（待确认的 taskId）
     private volatile String mcpConnecting;                           // 非 null = 正在后台连接的 server 名（渲染线程读）
+    private volatile boolean mcpReloading;                           // MCP 配置 reload 在飞（/reload 或面板 r 键；渲染线程读）
     private String pendingSkill;                                     // 已选技能名（可空）：显示为输入框上方标签，发送时随本条消息加载并清除
     private AskRequest activeAsk;                                     // 当前正在作答的问询（null=非作答态）
     private int askQ;                                                 // 当前问题下标
@@ -357,8 +358,8 @@ public final class CodeTuiView extends InlineApp {
             // 若 /skills 在前，输入 "/skill" 回车会误选到 /skills（只读清单）而进不了选择器。
             new SlashCommand("/skill",   "为本条消息指定技能"),
             new SlashCommand("/skills",  "查看可用技能（模型按需自动调用）"),
-            new SlashCommand("/reload",  "重新扫描技能目录（新增/删除的 SKILL.md 生效）"),
-            new SlashCommand("/mcp",     "管理 MCP 服务器（启用/禁用）"),
+            new SlashCommand("/reload",  "重扫技能目录与 MCP 配置（SKILL.md / mcp.json 改动生效）"),
+            new SlashCommand("/mcp",     "管理 MCP 服务器（启停 / r 重载配置）"),
             new SlashCommand("/permissions", "查看权限模式与生效规则"),
             new SlashCommand("/tasks",   "查看后台任务（可展开结果 / 终止）"),
             new SlashCommand("/continue", "继续执行上一批未完成的计划"),
@@ -2905,7 +2906,7 @@ public final class CodeTuiView extends InlineApp {
         pickingMcp = true;
     }
 
-    /** MCP 面板按键：↑↓/kj 移动、数字快选、Enter/Space 切换、Tab 展开工具清单、Esc 关闭。始终 HANDLED。 */
+    /** MCP 面板按键：↑↓/kj 移动、数字快选、Enter/Space 切换、r 重载配置、Tab 展开工具清单、Esc 关闭。始终 HANDLED。 */
     private EventResult onMcpPickerKey(KeyEvent k) {
         List<McpRegistry.ServerView> list = onSubmit.mcpServers();
         int n = list.size();
@@ -2917,6 +2918,8 @@ public final class CodeTuiView extends InlineApp {
         for (int i = 0; i < n && i < 9; i++) {
             if (k.isChar((char) ('1' + i))) { pickIndex = i; mcpExpanded = false; return EventResult.HANDLED; }
         }
+        // r：重载两层 mcp.json（面板本就只在空闲时能开，busy 闸门天然成立）。列表每次 render 现查，重载后自动刷新。
+        if (k.isChar('r') && !k.hasShift()) { reloadMcpConfig(); return EventResult.HANDLED; }
         // !hasShift()：同 onSlashMenuKey，别把 Shift+Tab（权限模式循环）当成展开键
         if ((k.code() == KeyCode.TAB || k.isChar('\t')) && !k.hasShift()) { mcpExpanded = !mcpExpanded; return EventResult.HANDLED; }
         if (k.code() == KeyCode.ENTER || k.isChar('\r') || k.isChar('\n') || k.isChar(' ')) {
@@ -2963,7 +2966,8 @@ public final class CodeTuiView extends InlineApp {
         if (list.isEmpty()) return new Element[0];               // scope 每次 render eager 求值：首行判空
         int sel = clampIndex(pickIndex, list.size());
         List<Element> els = new ArrayList<>();
-        els.add(text("  MCP 服务器（↑↓ 选择 · Enter 启用/禁用 · Tab 查看工具 · Esc 关闭）").style(PICK_TITLE));
+        els.add(text((mcpReloading ? "  ⟳ 正在重载 mcp.json…" : "")
+                + "  MCP 服务器（↑↓ 选择 · Enter 启用/禁用 · r 重载配置 · Tab 查看工具 · Esc 关闭）").style(PICK_TITLE));
         for (int i = 0; i < list.size(); i++) {
             McpRegistry.ServerView v = list.get(i);
             boolean isSel = i == sel;
@@ -3743,12 +3747,46 @@ public final class CodeTuiView extends InlineApp {
     boolean pickingTasksForTest() { return pickingTasks; }
     String tasksStatusTextForTest() { return tasksStatusText(); }
 
-    /** /reload：重扫两层技能目录后打一行结果 + 复用 {@link #printSkills} 展示最新清单（运行中增删 SKILL.md 即时生效，无需重启）。 */
+    /** /reload：重扫两层技能目录 + （空闲时）重载 MCP 配置，各打一行结果
+     * （运行中增删 SKILL.md、改 mcp.json 即时生效，无需重启）。 */
     private void reloadSkills() {
         onSubmit.reloadSkills();
         int n = onSubmit.skills().size();
         state.pushInfo("↻ 已重新扫描技能目录：当前 " + n + " 个技能");
         printSkills();
+        reloadMcpConfig();
+    }
+
+    /**
+     * 重载 MCP 配置（/reload 与 /mcp 面板 r 键共用）。<b>仅空闲可做</b>（回合中摘工具/关连接
+     * 会撞在飞调用，与 /mcp 面板同理由）；忙碌时跳过并提示。diff + 后台连接由 registry 完成，
+     * 这里只起后台线程（毫秒级返回，不冻结渲染循环）并打摘要行。
+     */
+    private void reloadMcpConfig() {
+        if (mcpReloading) return;                               // 一次一个
+        if (busy()) {
+            state.pushInfo("⏳ MCP 配置重载需空闲（回合中摘工具会撞在飞调用），技能已重扫——回合结束后再 /reload");
+            return;
+        }
+        mcpReloading = true;
+        Thread t = new Thread(() -> {
+            try {
+                McpRegistry.ReloadResult r = onSubmit.reloadMcp();
+                if (r == null) return;                          // 无 MCP 支持：无话可说
+                if (r.added() == 0 && r.removed() == 0 && r.replaced() == 0) {
+                    state.pushInfo("↻ MCP 配置无变化（" + r.unchanged() + " 个 server）");
+                } else {
+                    state.pushInfo("↻ 已重载 MCP 配置：新增 " + r.added() + " · 移除 " + r.removed()
+                            + " · 重连 " + r.replaced() + " · 保留 " + r.unchanged()
+                            + "（连接在后台进行，完成后工具自动可用）");
+                }
+            } finally {
+                mcpReloading = false;
+                publishLocalViewChange();                       // 后台线程写本地 UI 状态须主动唤醒
+            }
+        }, "mcp-reload");
+        t.setDaemon(true);
+        t.start();
     }
 
     /** /skills：把可用技能清单（名字 · 来源层 · 描述）打进 scrollback（灰色信息行）。 */

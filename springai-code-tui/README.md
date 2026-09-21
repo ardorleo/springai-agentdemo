@@ -118,8 +118,8 @@ DeepSeek 现役内置模型为 `deepseek-flash`（快 · 便宜 · 支持图片�
 
 - `/model`：切换模型；在列表按 `→` 进入当前高亮模型的思考设置（模式开关 + provider 原生强度/token 预算），按模型独立记忆。
 - `/context`：查看上下文占用明细（事件分桶、占用总数、构成占比、缓存命中率）；`/compact`：压缩上下文。
-- `/skills`、`/skill`、`/reload`：查看、指定和重载技能。
-- `/mcp`：运行期管理 MCP 服务。
+- `/skills`、`/skill`：查看、指定技能；`/reload`：重扫技能目录并重载 MCP 配置（改动即时生效，无需重启）。
+- `/mcp`：运行期管理 MCP 服务（Enter 启停、`r` 重载配置）。
 - `/tasks`：查看后台任务。
 - `/continue`：继续执行恢复会话中未完成的计划。
 - `Shift+Tab`：循环切换权限模式。
