@@ -11,6 +11,7 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -66,71 +67,70 @@ class VisionTurnBudgetTest {
     }
 
     /**
-     * 用户图有<b>独立</b>回合额度，且比工具图宽：跑满 {@code MAX_TOOL_TURN_DELIVERIES} 轮工具循环后，
-     * 用户图仍在。
+     * 用户图与工具图的额度<b>互不挤占</b>：工具循环把工具图额度跑满后，用户图仍能正常首推。
      *
-     * <p>钉住两个决定：① 用户图不再与工具图共享一个计数器（共享时 2 张图第 7 轮就被工具循环挤掉，
-     * 正是线上「贴了图却说看不见」的成因）；② 用户图也不是无界（见
-     * {@link #userImagesStopAfterTheirOwnTurnBudget}）。
+     * <p>钉住「两套独立计数器」这个决定——共享一个计数器时，工具循环会把用户图的额度吃掉
+     * （实测 2 张用户图在第 7 轮就被工具循环挤掉），而他贴的图正是这一轮的全部意图。
      */
     @Test
-    void userImagesSurviveWholeTurnDespiteToolLoop() throws Exception {
+    void toolLoopDoesNotStarveUserImages() throws Exception {
         png("a.png");
         png("b.png");
-        VisionMaterializer m = new VisionMaterializer(root, new ImagePreparer(), new VisionBudget());
+        png("tool.png");
 
+        // 先让工具图额度彻底耗尽
+        VisionMaterializer spender = new VisionMaterializer(root, new ImagePreparer(), new VisionBudget());
+        List<Message> spend = userTurn("干活");
+        for (int i = 0; i <= VisionBudget.MAX_TOOL_TURN_DELIVERIES; i++) {
+            spend.add(toolResult(ref("tool.png", "tool.png")));
+            spender.materialize(new Prompt(new ArrayList<>(spend)), true);
+        }
+
+        // 用户此刻贴两张图：应照常首推，不受工具图额度影响
+        VisionMaterializer m = new VisionMaterializer(root, new ImagePreparer(), new VisionBudget());
         List<Message> msgs = userTurn(
                 "看看这两张图\n" + ref("a.png", "a.png") + "\n" + ref("b.png", "b.png"));
+        Prompt out = m.materialize(new Prompt(msgs), true);
 
-        // 工具循环轮数超出「工具图」额度，但仍在「用户图」额度内
-        int iterations = VisionBudget.MAX_TOOL_TURN_DELIVERIES + 5;
-        assertTrue(iterations * 2 <= VisionBudget.MAX_USER_TURN_DELIVERIES,
-                "前提：这段时间必须落在用户图自己的额度内");
-        for (int i = 1; i <= iterations; i++) {
-            Prompt out = m.materialize(new Prompt(msgs), true);
-            assertEquals(2, mediaCount(out),
-                    "第 " + i + " 轮用户图不该消失（用户图有独立额度）");
-            addToolResult(msgs);
-        }
+        assertEquals(2, mediaCount(out), "用户图不该被工具图额度挤掉");
     }
 
     /**
-     * 用户图额度有界：用一个回合跑满后必须停止投递，并写 {@code turn_budget_exhausted}。
+     * 用户图额度在「首次推一次」之后<b>不会被自动重发消耗</b>：同一回合里只有首轮推一次，
+     * 之后模型要看只能 Read（那算工具图，走工具图额度）。
      *
-     * <p>没有这条，图就会随轮数<b>无界重传</b>——实测 2 张图跑 30 轮 = 60 张·次 ≈ 112.8k token，
-     * 正是 {@link VisionBudget} 类注释点名要防的单回合成本失控（原文举例 108k）。
+     * <p>这条钉住这个事实——若哪天有人改回"每轮重发"，用户图额度会重新被消耗，届时本条失败，
+     * 提示他重新评估两份额度的意义。
      */
     @Test
-    void userImagesStopAfterTheirOwnTurnBudget() throws Exception {
+    void userImagesArePushedOnceAndDoNotDrainUserQuota() throws Exception {
         png("a.png");
         png("b.png");
-        VisionMaterializer m = new VisionMaterializer(root, new ImagePreparer(), new VisionBudget());
+        VisionBudget budget = new VisionBudget();
+        VisionMaterializer m = new VisionMaterializer(root, new ImagePreparer(), budget);
 
-        List<Message> msgs = userTurn(
-                "看看这两张图\n" + ref("a.png", "a.png") + "\n" + ref("b.png", "b.png"));
+        List<Message> msgs = userTurn("看这两张\n" + ref("a.png", "a.png") + "\n" + ref("b.png", "b.png"));
+        Prompt first = m.materialize(new Prompt(new ArrayList<>(msgs)), true);
+        assertEquals(2, mediaCount(first), "首轮推一次");
 
-        // 2 张/轮的消耗下，跑到超出用户图额度的那一轮
-        int rounds = VisionBudget.MAX_USER_TURN_DELIVERIES / 2 + 2;
-        boolean sawExhausted = false;
-        for (int i = 1; i <= rounds; i++) {
-            Prompt out = m.materialize(new Prompt(msgs), true);
-            String delivery = VisionBudgetProbeDelivery(out);
-            if (delivery.contains(FileReference.DELIVERY_TURN_EXHAUSTED)) {
-                sawExhausted = true;
-                assertEquals(0, mediaCount(out), "额度用尽后不该再投递用户图");
-                break;
-            }
-            addToolResult(msgs);
+        // 后续若干轮只有文本工具结果：用户图不再重发
+        for (int i = 1; i <= 5; i++) {
+            msgs.add(toolResult("Bash", "ok " + i));
+            Prompt later = m.materialize(new Prompt(new ArrayList<>(msgs)), true);
+            assertEquals(0, mediaCount(later),
+                    "第 " + i + " 轮不该重发用户图（按需投递）");
         }
-        assertTrue(sawExhausted,
-                "用户图必须有自己的封顶（否则单回合成本无界）；跑了 " + rounds + " 轮仍未耗尽");
     }
 
-    private static String VisionBudgetProbeDelivery(Prompt p) {
+    /** 聚合用户消息与工具结果里的 delivery 行。 */
+    private String deliveryOf(Prompt p) {
         StringBuilder sb = new StringBuilder();
         for (Message m : p.getInstructions()) {
-            if (m instanceof UserMessage u && u.getText() != null) {
-                sb.append(u.getText());
+            if (m instanceof UserMessage u && u.getText() != null) sb.append(u.getText()).append('\n');
+            if (m instanceof ToolResponseMessage t) {
+                for (ToolResponseMessage.ToolResponse r : t.getResponses()) {
+                    sb.append(r.responseData()).append('\n');
+                }
             }
         }
         return sb.toString();
@@ -198,6 +198,19 @@ class VisionTurnBudgetTest {
     /** 用户锚点消息：文本 + 引用块。 */
     private static java.util.ArrayList<Message> userTurn(String text) {
         return new java.util.ArrayList<>(List.of(UserMessage.builder().text(text).build()));
+    }
+
+    /** 一条工具结果（Read 工具）。 */
+    private static ToolResponseMessage toolResult(String body) {
+        return toolResult("Read", body);
+    }
+
+    /** 一条工具结果（工具名 + 正文）。 */
+    private static ToolResponseMessage toolResult(String tool, String body) {
+        return ToolResponseMessage.builder()
+                .responses(List.of(new ToolResponseMessage.ToolResponse(
+                        "c" + tool + body.hashCode(), tool, body)))
+                .build();
     }
 
     /** 追加一条工具结果（模拟工具循环的一轮）。 */

@@ -56,6 +56,25 @@ public final class VisionMaterializer {
 
     private volatile VisionSnapshot lastSnapshot = VisionSnapshot.EMPTY;
 
+    /**
+     * 「本回合已推送到哪个消息下标」高水位线，配合 {@link #highWaterTurn} 判断是否同一回合。
+     *
+     * <p><b>为什么需要它</b>：图片字节不进会话历史，所以一条引用只要还在「当轮范围内」就会
+     * 每轮被重新兑现——直到把回合额度吃光。实测第 1 轮产出的截图在此后 11 轮（模型早已转向
+     * 别的工具调用）仍被重发，额度因此耗尽，模型<b>真正需要看图时 Read 也拿不到</b>：
+     * 推送把拉取饿死了。
+     *
+     * <p>改为<b>首次推一次</b>：只有「上一轮之后新追加的消息」里的引用才推。用户图在回合首轮推、
+     * 工具图在产出的那轮推；而模型后来 Read 老图时那个工具结果是<b>新</b>的，照样能拿到图
+     * ——否则「按需」就成了「永远拿不到」。
+     *
+     * <p>高水位线跨兑现复用（同一回合内单调不减），换回合时重置为 0（见 {@link #doMaterialize}）。
+     * 无状态可不行：引用文本本身不携带「是否推过」的信息，而会话存储里那份必须是干净的
+     * （永远不该出现 delivered）。
+     */
+    private volatile String highWaterTurn = "";
+    private volatile int highWaterIndex;
+
     public VisionMaterializer(Path root, ImagePreparer preparer, VisionBudget budget) {
         this.root = root;
         this.preparer = preparer;
@@ -123,12 +142,25 @@ public final class VisionMaterializer {
                 : Objects.hashCode(msgs.get(anchor).getText()) + ":" + anchor;
         VisionBudget.Session session = budget.open(turnKey);
 
+        // 换回合则复位高水位线：新回合的引用（含锚点那条用户消息里的图）都算「新出现的」，要推。
+        if (!turnKey.equals(highWaterTurn)) {
+            highWaterTurn = turnKey;
+            highWaterIndex = 0;
+        }
+        // 上一轮推送到哪：只有 [mark, msgs.size()) 这段新增消息里的图才推（见字段注释）。
+        // 「已推过」的那些仍要进 outcomes——但状态写 delivered，否则模型看到的是「这张你看不见」
+        // 与「其实上一轮刚给过你」互相矛盾的信号。
+        final int mark = highWaterIndex;
+
         // sha 去重表：user 先加，从而用户图天然优先——同一张图用户贴过、模型又 Read 了一次，
         // 只发一份，且留在用户那条消息上（那才是他的意图所在）。
         Set<String> seen = new HashSet<>();
 
-        List<ParsedReference> userRefs = collectUserRefs(msgs, anchor, seen);
-        List<ParsedReference> toolRefs = collectToolRefs(msgs, anchor, seen);
+        // 只收 [mark, msgs.size()) 这段「上一轮之后新增」消息里的引用——见高水位线字段注释。
+        // 更早的引用<b>不进 outcomes</b>：它们保持原文本里的 not_in_view，而那对本轮是<b>准确</b>的
+        // （本轮确实没发，模型可 Read 取回）。写 delivered 反而是假话。
+        List<ParsedReference> userRefs = collectUserRefs(msgs, anchor, seen, mark);
+        List<ParsedReference> toolRefs = collectToolRefs(msgs, anchor, seen, mark);
 
         // 用户图<b>先</b>过预算：预算是先到先得，顺序即优先级。反过来会让「照这张稿子改」的
         // 稿子被随后 Read 的图挤掉——功能在最典型的用法上直接失效。
@@ -139,6 +171,10 @@ public final class VisionMaterializer {
                 admitAll(toolRefs, VisionBudget.MAX_TOOL_IMAGES, session, true);
 
         Map<ParsedReference, Media> toolMedia = deliveredMedia(toolOutcomes);
+
+        // 本轮看过的新消息都记进高水位线：无论是否兑现成功，它们都不该在下一轮被"重新发现"。
+        // 放在短路之前——不推进的话，一张被 token 预算挡下的图会每轮重新过闸，白做解析。
+        highWaterIndex = msgs.size();
 
         // 短路条件是「什么都没改」而<b>不是</b>「什么都没兑现」：一张都没兑现但有引用被判超预算时，
         // 那些 delivery 行仍必须改写，否则模型拿到的是「Read 一次就能看」这句假话。
@@ -222,11 +258,14 @@ public final class VisionMaterializer {
      * <p>不在这里砍到 {@link VisionBudget#MAX_USER_IMAGES}：超配额的那几条也得留下来，
      * 才能把它们的 delivery 改写成 {@code budget_exceeded}。真正的张数闸门在
      * {@link #admitAll} 里。解析本来就是对整段文本做的，多留几条不多花钱。
+     *
+     * @param mark 高水位线：锚点早于它说明这张图上一轮已经推过，本轮不再推（见字段注释）
      */
-    private List<ParsedReference> collectUserRefs(List<Message> msgs, int anchor, Set<String> seen) {
+    private List<ParsedReference> collectUserRefs(List<Message> msgs, int anchor, Set<String> seen, int mark) {
         List<ParsedReference> out = new ArrayList<>();
-        if (anchor < 0) {
-            return out;                                  // 没有锚点就只处理其后的工具结果
+        if (anchor < 0 || anchor < mark) {
+            // 没有锚点就只处理其后的工具结果；锚点早于高水位线 = 用户图上一轮已推过，不再推。
+            return out;
         }
         for (ParsedReference r : FileReferenceParser.parse(msgs.get(anchor).getText(), root)) {
             if (seen.add(r.sha())) out.add(r);
@@ -244,10 +283,13 @@ public final class VisionMaterializer {
      * <p><b>为什么这里仍在收集阶段砍配额</b>（用户侧已改成收全、由 {@link #admitAll} 砍）：
      * 工具侧被跳过的引用<b>无处改写</b>——它在 {@code ToolResponseMessage} 里，那条一个字都不能动。
      * 多收几条只会在每次工具循环迭代里白白多做解析与存在性校验，换不来任何能写出去的信号。
+     *
+     * @param mark 高水位线：早于它的工具结果里的图上一轮已经推过，本轮不再推。
+     *        <b>模型后来 Read 老图时那个工具结果是新的</b>（下标 ≥ mark），故照样能拿到图。
      */
-    private List<ParsedReference> collectToolRefs(List<Message> msgs, int anchor, Set<String> seen) {
+    private List<ParsedReference> collectToolRefs(List<Message> msgs, int anchor, Set<String> seen, int mark) {
         List<ParsedReference> out = new ArrayList<>();
-        for (int i = msgs.size() - 1; i > anchor; i--) {
+        for (int i = msgs.size() - 1; i > anchor && i >= mark; i--) {
             Message m = msgs.get(i);
             if (!(m instanceof ToolResponseMessage)) continue;      // ★ assistant 在此被挡下
             List<ToolResponseMessage.ToolResponse> responses = ((ToolResponseMessage) m).getResponses();

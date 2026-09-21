@@ -14,6 +14,7 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -219,20 +220,29 @@ class VisionMaterializerTest {
         assertTrue(out.get(0).getText().contains("delivery: delivered"));
     }
 
-    /** ★ 回合累计额度用尽后停止兑现。 */
+    /**
+     * ★ 回合累计额度用尽后停止兑现。
+     *
+     * <p>每轮由工具<b>新产出一张图</b>来消耗额度（推送改为"首次推一次"后，同一张图的重复重发
+     * 不再发生，额度真正被消耗的路径是「不同图不断出现」与「Read 反复取图」）。
+     */
     @Test
     void turnBudgetExhaustionStopsDelivery() throws Exception {
         png("docs/bug.png");
         VisionMaterializer m = materializer();
-        Prompt p = new Prompt(List.of(new UserMessage("固定提问"), toolCall(),
-                toolResult(ref("bug.png", "docs/bug.png"))));
+        List<Message> msgs = new ArrayList<>();
+        msgs.add(new UserMessage("固定提问"));
 
         for (int i = 0; i < VisionBudget.MAX_TOOL_TURN_DELIVERIES; i++) {
-            assertEquals(4, m.materialize(p, true).getInstructions().size(),
+            msgs.add(toolResult(ref("bug.png", "docs/bug.png")));
+            assertEquals(msgs.size() + 1, m.materialize(new Prompt(new ArrayList<>(msgs)), true)
+                            .getInstructions().size(),
                     "第 " + (i + 1) + " 次应仍在额度内");
         }
-        assertEquals(3, m.materialize(p, true).getInstructions().size(),
-                "额度用尽后不该再兑现");
+        msgs.add(toolResult(ref("bug.png", "docs/bug.png")));
+        assertEquals(msgs.size(), m.materialize(new Prompt(new ArrayList<>(msgs)), true)
+                        .getInstructions().size(),
+                "额度用尽后不该再兑现（不该追加合成消息）");
     }
 
     /** 同一请求内同一 sha 不重复兑现——用户贴了图、模型又 Read 了同一张。 */
@@ -299,27 +309,33 @@ class VisionMaterializerTest {
     }
 
     /**
-     * 用户图<b>不</b>参与回合累计额度：额度用尽后当轮引用仍应为 delivered。
+     * 用户图<b>不</b>参与工具图回合额度：把工具图额度跑满后，用户图的首推不受影响。
      *
-     * <p>额度按「张·次」计、图片每轮请求都要重发，故张数越多耗尽越快（实测 2 张第 7 轮即尽）。
-     * 用户贴的 1–3 张图是他这一轮的<b>全部意图</b>，中途被掐会让「照这张图改」在回合后半段失效；
-     * 额度只想封住工具截图循环。这条钉住「用户图豁免」这个决定。
+     * <p>这条钉住「用户图有独立额度」——共享一个计数器时，工具循环会把用户图挤掉。
      */
     @Test
-    void userImagesAreNotChargedAgainstTurnBudget() throws Exception {
+    void userImagesAreNotChargedAgainstToolTurnBudget() throws Exception {
         png("x.png");
+        png("tool.png");
         VisionMaterializer m = materializer();
-        Prompt p = new Prompt(List.of(new UserMessage("固定提问\n" + ref("x.png", "x.png"))));
+        List<Message> msgs = new ArrayList<>();
+        msgs.add(new UserMessage("固定提问\n" + ref("x.png", "x.png")));
 
+        // 先用工具图把「工具图」额度跑满
         for (int i = 0; i < VisionBudget.MAX_TOOL_TURN_DELIVERIES; i++) {
-            m.materialize(p, true);
+            msgs.add(toolResult(ref("tool.png", "tool.png")));
+            m.materialize(new Prompt(new ArrayList<>(msgs)), true);
         }
-        String out = m.materialize(p, true).getInstructions().get(0).getText();
+
+        // 新回合：用户贴图，应照常首推（不受工具图额度影响）
+        VisionMaterializer fresh = materializer();
+        Prompt p = new Prompt(List.of(new UserMessage("新提问\n" + ref("x.png", "x.png"))));
+        String out = fresh.materialize(p, true).getInstructions().get(0).getText();
 
         assertTrue(out.contains("delivery: " + FileReference.DELIVERY_DELIVERED),
-                "额度用尽后用户图仍应投递：\n" + out);
+                "用户图应照常投递：\n" + out);
         assertFalse(out.contains("delivery: " + FileReference.DELIVERY_TURN_EXHAUSTED),
-                "用户图不该被回合额度标记为耗尽：\n" + out);
+                "用户图不该被工具图额度标记为耗尽：\n" + out);
     }
 
     private static int countOccurrences(String haystack, String needle) {
@@ -358,11 +374,17 @@ class VisionMaterializerTest {
         png("b.png");
         VisionMaterializer m = materializer();
 
-        m.materialize(sameTurn(ref("a.png", "a.png")), true);
+        // 真实工具循环是「在同一回合的消息列表上不断追加」——同一对象复用不构成新轮次。
+        List<Message> msgs = new ArrayList<>();
+        msgs.add(new UserMessage(ANCHOR));
+        msgs.add(toolCall());
+        msgs.add(toolResult(ref("a.png", "a.png")));
+        m.materialize(new Prompt(new ArrayList<>(msgs)), true);
         long afterFirst = m.lastSnapshot().tokens();
         assertEquals(1, m.lastSnapshot().images(), "前置条件：第一次迭代应兑现 1 张");
 
-        m.materialize(sameTurn(ref("b.png", "b.png")), true);
+        msgs.add(toolResult(ref("b.png", "b.png")));   // 追加一张新图
+        m.materialize(new Prompt(new ArrayList<>(msgs)), true);
 
         assertEquals(2, m.lastSnapshot().images(),
                 "同一回合的两次兑现该累计成 2 张，被覆盖成「上一次请求」了");
@@ -428,19 +450,22 @@ class VisionMaterializerTest {
     void snapshotStopsGrowingOnceTurnBudgetIsExhausted() throws Exception {
         png("x.png");
         VisionMaterializer m = materializer();
-        // 同一个 Prompt 对象反复兑现 → 锚点文本与下标恒定 → turnKey 恒定，全在一个回合里
-        Prompt p = new Prompt(List.of(new UserMessage(ANCHOR + "\n" + ref("x.png", "x.png"))));
+        // 工具循环在同一回合的消息列表上不断追加（锚点文本与下标恒定 → turnKey 恒定）
+        List<Message> msgs = new ArrayList<>();
+        msgs.add(new UserMessage(ANCHOR));
 
-        // 用「工具图」跑额度，用户锚点不带引用——回合额度只对工具图计数（用户图已豁免）
+        // 用「工具图」跑额度，用户锚点不带引用——工具图额度与用户图独立
         for (int i = 0; i < VisionBudget.MAX_TOOL_TURN_DELIVERIES; i++) {
-            m.materialize(sameTurn(ref("x.png", "x.png")), true);
+            msgs.add(toolResult(ref("x.png", "x.png")));
+            m.materialize(new Prompt(new ArrayList<>(msgs)), true);
         }
         int images = m.lastSnapshot().images();
         long tokens = m.lastSnapshot().tokens();
         assertEquals(VisionBudget.MAX_TOOL_TURN_DELIVERIES, images, "前置条件：应恰好累计到回合上限");
         assertTrue(tokens > 0, "前置条件：应记上 token");
 
-        m.materialize(sameTurn(ref("x.png", "x.png")), true);   // 额度已尽：这次兑现 0 张
+        msgs.add(toolResult(ref("x.png", "x.png")));
+        m.materialize(new Prompt(new ArrayList<>(msgs)), true);   // 额度已尽：这次兑现 0 张
 
         assertEquals(images, m.lastSnapshot().images(), "额度用尽后张数还在涨");
         assertEquals(tokens, m.lastSnapshot().tokens(),
