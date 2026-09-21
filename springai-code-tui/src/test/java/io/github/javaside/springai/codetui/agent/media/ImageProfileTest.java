@@ -68,22 +68,53 @@ class ImageProfileTest {
         assertEquals(1568, ImageProfile.ANTHROPIC.estimateTokens(5000, 5000));
     }
 
-    // ── OpenAI：long edge 2048；token = base + 512px 分块 × tile ──
+    // ── OpenAI 通路：long edge 2048；token 按 32×32 分块 × 1.2（实测）──
 
     @Test
     void openAiAllowsLargerLongEdgeThanAnthropic() {
         assertEquals(2048, ImageProfile.OPENAI.maxEdge(),
-                "OpenAI high detail 容许 2048，比 1568 更能保住小字细节");
+                "该通路容许更大分辨率，比 1568 更能保住小字细节");
     }
 
     /**
-     * 官方分档：gpt-5 系 base 70 + 每 512² 分块 140。
-     * 512×512 恰好 1 块 → 70 + 140 = 210；800×600 需 2×2 = 4 块 → 70 + 560 = 630。
+     * <b>实测公式</b>：{@code ⌈宽/32⌉ × ⌈高/32⌉ × 1.2}，按原始像素直接算、不做缩放。
+     *
+     * <p>数据来自 true 机测量（gpt-6-astra / gpt-5.6-sol / gpt-5.5 三款一致，6 个数量级误差 ≤1）：
+     * <pre>
+     *   32x32     →     2     256x256   →    77
+     *   64x64     →     5     800x600   →   571
+     *   128x128   →    20     2442x1146 →  3327
+     *   4000x3000 → 14101
+     * </pre>
+     * 实测与公式之间恒有 0~1 的取整噪声（如 800×600：实测 571、公式 570），
+     * 故断言留 1 token 容差——要紧的是<b>不许出现倍数级低估</b>。
+     *
+     * <p><b>为什么不用官方文档的 {@code base + 512px分块×tile}</b>：那套公式在本项目实际使用的
+     * 通路上不成立——2048×961 官方口径算 1190、实测 2381（差 2 倍），4000×3000 官方 1470、
+     * 实测 14101（差 9.6 倍）。低估比高估危险：预算判定过松，请求发出去才超支。
      */
     @Test
-    void openAiUsesBasePlusTileFormula() {
-        assertEquals(210, ImageProfile.OPENAI.estimateTokens(512, 512));
-        assertEquals(630, ImageProfile.OPENAI.estimateTokens(800, 600));
+    void openAiUsesMeasuredPatchFormula() {
+        assertNear(571, ImageProfile.OPENAI.estimateTokens(800, 600));
+        assertNear(2381, ImageProfile.OPENAI.estimateTokens(2048, 961));
+        assertNear(2, ImageProfile.OPENAI.estimateTokens(32, 32));
+        assertNear(14101, ImageProfile.OPENAI.estimateTokens(4000, 3000));
+    }
+
+    /** 与实测值相差不超过 1 token（取整噪声），且不得低估超过 1。 */
+    private static void assertNear(long measured, long estimated) {
+        assertTrue(Math.abs(measured - estimated) <= 1,
+                "估算 " + estimated + " 与实测 " + measured + " 相差超过取整噪声");
+    }
+
+    /**
+     * 回归钉子：2048×961（本项目 MAX_EDGE 下 2442×1146 截图的出站尺寸）
+     * 绝不能被低估——旧实现给 1190，实测 2381。
+     */
+    @Test
+    void openAiNoLongerUnderestimatesResizedScreenshot() {
+        long ours = ImageProfile.OPENAI.estimateTokens(2048, 961);
+        assertTrue(ours >= 2381, "不得低估：实测 2381，当前 " + ours);
     }
 
     // ── 通义千问：token = w̄×h̄/token_pixels + 2，Qwen3 系 32×32 ──

@@ -73,29 +73,38 @@ public enum ImageProfile {
     },
 
     /**
-     * OpenAI：{@code detail:high} 口径——缩到 2048 见方内，短边超 768 则缩到 768，
-     * 再按 512px 分块计费；{@code 总 = base + 分块数 × tile}。gpt-5 系 base 70 / tile 140。
+     * OpenAI 通路：{@code ⌈宽/32⌉ × ⌈高/32⌉ × 1.2}，按<b>原始像素</b>直接算，不做缩放。
+     *
+     * <p><b>公式来自真机实测，不是官方文档</b>（务必看清这条，别照官方文档"纠正"回去）：
+     * 本项目的 {@code OPENAI_BASE_URL} 通常指向第三方聚合网关，其计费实现与 OpenAI 官方
+     * {@code base + 512px分块×tile} 不同。三款模型（gpt-6-astra / 5.6-sol / 5.5）实测一致，
+     * 6 个数量级误差 ≤1 token：
+     * <pre>
+     *   32x32     →     2（公式 1）        256x256   →    77（公式 76）
+     *   64x64     →     5（公式 4）        800x600   →   571（公式 570）
+     *   128x128   →    20（公式 19）      2442x1146 →  3327（公式 3326）
+     *   4000x3000 → 14101（公式 14100）
+     * </pre>
+     *
+     * <p><b>为什么必须用实测值</b>：官方口径在本通路会<b>低估</b>——2048×961 官方算 1190、
+     * 实测 2381（差 2 倍）；4000×3000 官方 1470、实测 14101（差 9.6 倍）。低估比高估危险：
+     * 预算判定过松，请求真发出去才发现超支；高估只是少发图、功能受限。
+     *
+     * <p><b>换端点要重测</b>：若改用 OpenAI 官方端点（api.openai.com），本档需按官方
+     * {@code base + tile} 口径重新校准，否则会反向高估。
      */
     OPENAI(2048) {
-        private static final long BASE = 70L;
-        private static final long TILE = 140L;
+        /** 32×32 分块。 */
+        private static final int PATCH = 32;
+        /** 每分块 1.2 token。 */
+        private static final double TOKENS_PER_PATCH = 1.2;
 
         @Override
         public long estimateTokens(int width, int height) {
-            int longest = Math.max(width, height);
-            if (longest > 2048) {
-                double k = 2048.0 / longest;
-                width = Math.max(1, (int) Math.round(width * k));
-                height = Math.max(1, (int) Math.round(height * k));
-            }
-            int shortest = Math.min(width, height);
-            if (shortest > 768) {
-                double k = 768.0 / shortest;
-                width = Math.max(1, (int) Math.floor(width * k));
-                height = Math.max(1, (int) Math.floor(height * k));
-            }
-            long tiles = ceilDiv(width, 512) * ceilDiv(height, 512);
-            return BASE + tiles * TILE;
+            long patches = ceilDiv(width, PATCH) * ceilDiv(height, PATCH);
+            // 向上取整而非四舍五入：实测值与真实值之间有 0~1 的取整噪声，
+            // 预算场景里宁可略高一点——低估会让判定过松、请求发出去才超支。
+            return (long) Math.ceil(patches * TOKENS_PER_PATCH);
         }
     },
 

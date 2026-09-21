@@ -83,7 +83,7 @@
 用户图**先**过预算且保底不淘汰，工具图只在彼此之间竞争取最新一张：反过来会让「照这张稿子改」的稿子被随后 `Read` 的图挤掉。
 
 > **token 按 provider 各自口径估算**（见 `ImageProfile`）。早期对所有家套用 `宽 × 高 / 750`，对 DeepSeek 实测高估 3.6 倍（同一张 2442×1146 截图：旧公式 3731、真机约 1000），把每请求上限从「6 张」压成「3 张」——「额度感觉太少」即源于此。
-> 新口径下同一张图 DeepSeek 约 556、Anthropic 约 1512、OpenAI 约 1190。
+> 新口径下同一张图 DeepSeek 约 556、Anthropic 约 1512、OpenAI 通路约 2381（该档按聚合网关实测公式计，非官方文档口径）。
 
 被上限挡下的图不会静默消失，引用块的 `delivery` 行会写明结局：`delivered` / `not_in_view`（Read 一次就能看）/ `budget_exceeded`（当轮图太多，单独 Read 它）/ `turn_budget_exhausted`（本回合额度用尽，下个回合再说）/ `reference_only`（当前模型看不见，别白 Read）。
 
