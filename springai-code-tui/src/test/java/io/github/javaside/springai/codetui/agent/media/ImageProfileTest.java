@@ -101,10 +101,15 @@ class ImageProfileTest {
         assertNear(14101, ImageProfile.OPENAI.estimateTokens(4000, 3000));
     }
 
-    /** 与实测值相差不超过 1 token（取整噪声），且不得低估超过 1。 */
+    /** 与实测值相差不超过 1 token（OpenAI 档的取整噪声）。 */
     private static void assertNear(long measured, long estimated) {
-        assertTrue(Math.abs(measured - estimated) <= 1,
-                "估算 " + estimated + " 与实测 " + measured + " 相差超过取整噪声");
+        assertNear(measured, estimated, 1);
+    }
+
+    /** 与实测值相差不超过 tolerance——各档噪声不同，容差按档给。 */
+    private static void assertNear(long measured, long estimated, long tolerance) {
+        assertTrue(Math.abs(measured - estimated) <= tolerance,
+                "估算 " + estimated + " 与实测 " + measured + " 相差超过容差 " + tolerance);
     }
 
     /**
@@ -125,7 +130,52 @@ class ImageProfileTest {
         assertEquals(1026, ImageProfile.QWEN.estimateTokens(1024, 1024));
     }
 
-    // ── 兜底档：口径未知的 provider（智谱官方未公布、网关模型混杂）──
+    // ── 智谱 GLM：28×28 分块，地板 18、封顶 6086（真机实测）──
+
+    /**
+     * <b>实测公式</b>：{@code min(6086, max(18, ⌈宽/28⌉ × ⌈高/28⌉))}。
+     *
+     * <p>数据来自真机测量（glm-4.6v，2026-09-21，已扣除文本基线 7）：
+     * <pre>
+     *   100x100  →    18（地板）    560x560   →   402
+     *   200x200  →    51            1000x1000 →  1298
+     *   336x336  →   146            2000x2000 →  5043
+     *   3000x3000 → 6086（封顶）    4000x4000 →  6086
+     * </pre>
+     * 15 个测点误差均 ≤54（约 4%），且方向偏<b>高估</b>——预算场景安全。
+     *
+     * <p>与 Anthropic 同为 28×28 分块（GLM 系沿用该视觉编码口径），区别只在
+     * 多了一条 18 的地板与 6086 的封顶。
+     */
+    @Test
+    void zhipuUses28PatchFormulaWithFloorAndCap() {
+        // 智谱的实测噪声比 OpenAI 档大（分块边界取整），实测偏差 ≤54，故容差取 60
+        assertNear(146, ImageProfile.ZHIPU.estimateTokens(336, 336), 60);
+        assertNear(402, ImageProfile.ZHIPU.estimateTokens(560, 560), 60);
+        assertNear(1298, ImageProfile.ZHIPU.estimateTokens(1000, 1000), 60);
+        assertNear(51, ImageProfile.ZHIPU.estimateTokens(200, 200), 60);
+    }
+
+    @Test
+    void zhipuHasFloorForTinyImages() {
+        assertEquals(18, ImageProfile.ZHIPU.estimateTokens(20, 20));
+        assertEquals(18, ImageProfile.ZHIPU.estimateTokens(100, 100));
+    }
+
+    @Test
+    void zhipuHasCeilingForHugeImages() {
+        assertEquals(6086, ImageProfile.ZHIPU.estimateTokens(3000, 3000));
+        assertEquals(6086, ImageProfile.ZHIPU.estimateTokens(4000, 4000));
+    }
+
+    /** 回归：旧 CONSERVATIVE 口径（宽×高/750）对智谱其实接近，但大图会偏。 */
+    @Test
+    void zhipuIsNoLongerOnConservativeProfile() {
+        assertTrue(ImageProfile.forProvider("zhipu") == ImageProfile.ZHIPU,
+                "智谱已有实测口径，不该再走保守档");
+    }
+
+    // ── 兜底档：口径未知的 provider（网关模型混杂）──
 
     /**
      * 未知口径时沿用旧公式，但<b>明确标注为保守</b>——宁可少发，也不要因为猜错而上传超限。
