@@ -314,7 +314,7 @@ Prompt.messages
 
 ### OpenCode Go 只开放官方视觉模型
 
-OpenCode Go 也复用 `OpenAiChatModel`，客户端能够生成 `image_url`。OpenCode Go 官方文档目前明确列出 `deepseek-v4-flash-vision-exp`，并说明图片会按尺寸折算为输入 token，因此 `OpencodeGoProvider` 只为这个模型开放视觉兑现。
+OpenCode Go 也复用 `OpenAiChatModel`，客户端能够生成 `image_url`。OpenCode Go 官方文档目前明确列出 `deepseek-flash`（原名 `deepseek-v4-flash-vision-exp`，2026-09-21 随 DeepSeek 官方改名同步；网关 `/models` 已同时列出新旧名），并说明图片会按尺寸折算为输入 token，因此 `OpencodeGoProvider` 只为这个模型开放视觉兑现。
 
 其他 OpenCode Go 内置模型及通过 `OPENCODE_GO_MODELS` 配置的自定义模型仍保持 `TEXT_ONLY`。这里不直接复用完整的全局视觉前缀名单，因为“模型本身支持图片”不等于“Go 网关已验证并稳定透传该模型的图片请求”。
 
@@ -327,7 +327,8 @@ OpenCode Go 也复用 `OpenAiChatModel`，客户端能够生成 `image_url`。Op
 - 本项目 Qwen、智谱复用 `OpenAiChatModel`，不需要额外图片请求体改写；
 - OpenAI 已有真实模型端到端视觉探针；
 - Anthropic、Qwen 视觉模型和智谱视觉模型尚未在本项目中逐家完成真机视觉验证；
-- OpenCode Go 官方声明 `deepseek-v4-flash-vision-exp` 支持图片，本项目据此开放该模型；当前改动未使用真实 Go key 执行端到端探针。
+- OpenCode Go 官方声明 `deepseek-flash` 支持图片，本项目据此开放该模型；当前改动未使用真实 Go key 执行端到端探针。
+- 网关侧改名依据为 `/models` 列表（无需鉴权即可读取）与 DeepSeek 官方文档，<b>未用真实 Go key 反证</b>；真机验证待补。
 
 复用 `OpenAiChatModel` 只能证明请求能够按 OpenAI 图片格式组装，不能替远端兼容端点和具体模型作能力保证。
 
@@ -339,7 +340,7 @@ OpenCode Go 也复用 `OpenAiChatModel`，客户端能够生成 `image_url`。Op
 | `agent.AnthropicProvider` | 使用 Spring AI `AnthropicChatModel` 发送 Anthropic 请求 |
 | `agent.QwenProvider` | 使用 `OpenAiChatModel` 访问百炼兼容端点 |
 | `agent.ZhipuProvider` | 使用 `OpenAiChatModel` 访问智谱兼容端点 |
-| `agent.OpencodeGoProvider` | 使用 OpenAI 兼容通路，仅为官方声明的 `deepseek-v4-flash-vision-exp` 开放视觉能力 |
+| `agent.OpencodeGoProvider` | 使用 OpenAI 兼容通路，仅为官方声明的 `deepseek-flash` 开放视觉能力 |
 | `org.springframework.ai.openai.OpenAiChatModel.createRequest` | 遍历 Spring AI 消息并生成 OpenAI SDK 请求对象 |
 | `org.springframework.ai.anthropic.AnthropicChatModel.createRequest` | 遍历 Spring AI 消息并生成 Anthropic SDK 请求对象 |
 

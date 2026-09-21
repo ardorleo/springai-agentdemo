@@ -30,7 +30,14 @@ public final class VisionModels {
             "glm-4.6v",                        // ★ 2025-12 上线，首个原生 Function Call 的视觉线
             "glm-5.3-flash",                   // ★ 2026-08-26 上线，GLM-5 系首个原生多模态（注意：glm-5.3 本身仍是纯文本）
             "glm-5v",                          // ★ GLM-5V 系（2026-04 GLM-5V-Turbo，多模态 Coding 基座）
-            "deepseek-v4-flash-vision"         // ★ DeepSeek 视觉实验模型（2026-08-21 上线）
+            "deepseek-flash",                  // ★ DeepSeek 现役视觉模型（2026-09-21 改名：原
+                                               //   flash + flash-vision 合并为 deepseek-flash，官方
+                                               //   模型表标「图像理解 支持」）
+            "deepseek-v4-flash"                //   两个旧名都<b>确实接受图片</b>（实测三名字带图
+                                               //   返回同一 token 数 349），故一并放行——它们是同一
+                                               //   后端的别名，用户旧配置里的 id 不该被拦。
+                                               //   注：此名在 2026-09-21 之前是「纯文本 flash」，
+                                               //   那条语义已随改名失效。
     );
 
     /**

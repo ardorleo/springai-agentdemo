@@ -22,7 +22,7 @@ class ProviderModelsEnvTest {
         DeepSeekProvider p = new DeepSeekProvider("key", null, null);
         assertEquals("deepseek-v4-pro", p.defaultModel());
         assertEquals("deepseek-v4-pro", p.models().get(0).id());   // 内置清单首项 = 默认（本 Task 调序）
-        assertEquals(3, p.models().size());   // pro + flash + flash-vision-exp（2026-08-21 视觉实验模型）
+        assertEquals(2, p.models().size());   // pro + flash（2026-09-21 改名：flash 与 flash-vision 已合并）
     }
 
     @Test
@@ -90,7 +90,7 @@ class ProviderModelsEnvTest {
         OpencodeGoProvider provider = new OpencodeGoProvider("key", null, null);
         assertEquals("deepseek-v4-pro", provider.defaultModel());
         assertTrue(provider.models().stream()
-                .anyMatch(model -> model.id().equals("deepseek-v4-flash-vision-exp")),
+                .anyMatch(model -> model.id().equals("deepseek-flash")),
                 "OpenCode Go 官方视觉模型应出现在内置清单");
     }
 
@@ -98,8 +98,8 @@ class ProviderModelsEnvTest {
     void opencodeGo_onlyOfficialVisionModel_acceptsImages() {
         OpencodeGoProvider provider = new OpencodeGoProvider("key");
 
-        assertTrue(provider.capabilities("deepseek-v4-flash-vision-exp").supportsImageInput());
-        assertFalse(provider.capabilities("deepseek-v4-flash").supportsImageInput());
+        assertTrue(provider.capabilities("deepseek-flash").supportsImageInput());
+        assertFalse(provider.capabilities("deepseek-v4-pro").supportsImageInput());
         assertFalse(provider.capabilities("gpt-5.6-luna").supportsImageInput(),
                 "Go 网关未声明支持视觉的模型不能沿用全局前缀名单");
         assertFalse(provider.capabilities("custom-vision-model").supportsImageInput());

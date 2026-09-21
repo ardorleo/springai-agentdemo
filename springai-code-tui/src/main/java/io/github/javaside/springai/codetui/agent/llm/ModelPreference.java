@@ -12,6 +12,8 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -66,6 +68,29 @@ public final class ModelPreference {
                 throw new IllegalArgumentException("modelId 不能为空");
             }
         }
+    }
+
+    /**
+     * 已下线模型名的升级表：旧 id → 现役 id。
+     *
+     * <p><b>为什么必须迁移而不是当「不可用」</b>：DeepSeek 于 2026-09-21 把
+     * {@code deepseek-v4-flash}（纯文本）与 {@code deepseek-v4-flash-vision-exp}（视觉实验）
+     * 合并为 {@code deepseek-flash}。旧名<b>仍可正常调用</b>（官方：请求由同一后端服务），
+     * 只是不再出现在我们的清单里。若直接判定「不可用」，存有旧名的用户重启后会静默回退到
+     * 默认模型——而 DeepSeek 的默认是 {@code deepseek-v4-pro}，<b>不支持图像理解</b>，
+     * 用户会发现「图片功能突然没了」，却看不出与这次改名有关。
+     *
+     * <p>迁移只改内存中的返回值，<b>不写盘</b>：用户下次 {@code /model} 选中时照常落盘新名。
+     * 这样即使迁移表将来删掉，也只是多一次「回退到默认」的提示，不会留下更难查的痕迹。
+     */
+    private static final Map<String, String> RENAMED_MODELS = Map.of(
+            "deepseek-v4-flash", "deepseek-flash",
+            "deepseek-v4-flash-vision-exp", "deepseek-flash");
+
+    /** 把已下线的旧模型名换成现役名；无对应项则原样返回。 */
+    private static String upgrade(String modelId) {
+        String replacement = RENAMED_MODELS.get(modelId.toLowerCase(Locale.ROOT));
+        return replacement != null ? replacement : modelId;
     }
 
     /**
@@ -166,7 +191,7 @@ public final class ModelPreference {
             String providerId = providerNode != null && providerNode.isString()
                     ? providerNode.stringValue().trim() : null;
             return Optional.of(new Choice(
-                    providerId == null || providerId.isEmpty() ? null : providerId, modelId));
+                    providerId == null || providerId.isEmpty() ? null : providerId, upgrade(modelId)));
         }
         // 旧格式：单键 lastModel（字符串，裸 modelId）→ provider 未知。
         JsonNode v = node.get(KEY);
@@ -174,7 +199,7 @@ public final class ModelPreference {
             return Optional.empty();
         }
         String id = v.stringValue().trim();
-        return id.isEmpty() ? Optional.empty() : Optional.of(new Choice(null, id));
+        return id.isEmpty() ? Optional.empty() : Optional.of(new Choice(null, upgrade(id)));
     }
 
     /**

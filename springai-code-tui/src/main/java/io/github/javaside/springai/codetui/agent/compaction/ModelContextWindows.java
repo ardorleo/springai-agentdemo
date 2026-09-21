@@ -18,6 +18,9 @@ public final class ModelContextWindows {
             Map.entry("openai:gpt-5.6-terra", 1_050_000L),
             Map.entry("openai:gpt-5.6-luna", 1_050_000L),
             Map.entry("deepseek:deepseek-v4-pro", 1_000_000L),
+            // deepseek-flash 为 2026-09-21 改名后的现役 id（原 flash + flash-vision 合并）；
+            // 旧名仍可调用且窗口相同，故一并保留，避免旧配置落保守兜底。
+            Map.entry("deepseek:deepseek-flash", 1_000_000L),
             Map.entry("deepseek:deepseek-v4-flash", 1_000_000L),
             Map.entry("deepseek:deepseek-v4-flash-vision-exp", 1_000_000L),
             Map.entry("zhipu:glm-5.3", 1_000_000L),

@@ -28,9 +28,52 @@ class ModelPreferenceTest {
     @Test
     @DisplayName("写进去再读出来是同一个 provider + model")
     void writeThenReadRoundTrips(@TempDir Path root) {
-        assertTrue(ModelPreference.write(root, "deepseek", "deepseek-v4-flash"));
-        assertEquals(Optional.of(new ModelPreference.Choice("deepseek", "deepseek-v4-flash")),
+        assertTrue(ModelPreference.write(root, "deepseek", "deepseek-flash"));
+        assertEquals(Optional.of(new ModelPreference.Choice("deepseek", "deepseek-flash")),
                 ModelPreference.read(root));
+    }
+
+    /**
+     * 已下线模型名的升级：DeepSeek 2026-09-21 把 {@code deepseek-v4-flash} 与
+     * {@code deepseek-v4-flash-vision-exp} 合并为 {@code deepseek-flash}。
+     *
+     * <p>旧名<b>仍可调用</b>，但已不在清单里。若不迁移，存有旧名的用户重启后会回退到默认
+     * {@code deepseek-v4-pro}——<b>不支持图像理解</b>，表现为「图片功能突然没了」。
+     */
+    @Test
+    @DisplayName("旧模型名自动升级为现役名（新格式 providerId + modelId）")
+    void renamedModelIsUpgradedOnRead(@TempDir Path root) throws Exception {
+        Path f = ModelPreference.fileFor(root);
+        Files.createDirectories(f.getParent());
+        Files.writeString(f,
+                "{\"providerId\": \"deepseek\", \"modelId\": \"deepseek-v4-flash-vision-exp\"}");
+        assertEquals(Optional.of(new ModelPreference.Choice("deepseek", "deepseek-flash")),
+                ModelPreference.read(root));
+    }
+
+    @Test
+    @DisplayName("旧模型名自动升级（旧格式 lastModel 单键）")
+    void renamedModelIsUpgradedOnLegacyRead(@TempDir Path root) throws Exception {
+        Path f = ModelPreference.fileFor(root);
+        Files.createDirectories(f.getParent());
+        Files.writeString(f, "{\"lastModel\": \"deepseek-v4-flash\"}");
+        assertEquals(Optional.of(new ModelPreference.Choice(null, "deepseek-flash")),
+                ModelPreference.read(root));
+    }
+
+    @Test
+    @DisplayName("升级大小写无关；未收录的名字原样返回")
+    void upgradeIsCaseInsensitiveAndPassesThroughUnknown(@TempDir Path root) throws Exception {
+        Path f = ModelPreference.fileFor(root);
+        Files.createDirectories(f.getParent());
+        Files.writeString(f,
+                "{\"providerId\": \"deepseek\", \"modelId\": \"DeepSeek-V4-Flash-Vision-Exp\"}");
+        assertEquals(Optional.of(new ModelPreference.Choice("deepseek", "deepseek-flash")),
+                ModelPreference.read(root));
+
+        Files.writeString(f, "{\"providerId\": \"zhipu\", \"modelId\": \"glm-4.6v\"}");
+        assertEquals(Optional.of(new ModelPreference.Choice("zhipu", "glm-4.6v")),
+                ModelPreference.read(root), "未收录的名字不该被改动");
     }
 
     @Test
@@ -240,7 +283,7 @@ class ModelPreferenceTest {
     @Test
     @DisplayName("写完不留 .tmp 残骸")
     void noTempFileLeftBehind(@TempDir Path root) throws Exception {
-        assertTrue(ModelPreference.write(root, "deepseek", "deepseek-v4-flash"));
+        assertTrue(ModelPreference.write(root, "deepseek", "deepseek-flash"));
         try (var s = Files.list(root.resolve(".codetui"))) {
             List<String> leftovers = s.map(p -> p.getFileName().toString())
                     .filter(n -> n.endsWith(".tmp"))

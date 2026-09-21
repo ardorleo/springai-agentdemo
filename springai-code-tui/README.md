@@ -103,9 +103,10 @@ export DEEPSEEK_API_KEY=你的key
 | 扩展与多模态 | MCP、Skills、视觉输入、回合中插话 |
 | 终端注意提示 | 任务完成或需要你回答/确认时，改写 tab 标题（`⏳ 等待你的输入` / `✓ 已完成`）并响一声铃——切去别的窗口也看得出它在等你（见 [docs/guide/reference.md](docs/guide/reference.md#终端注意提示tab-标题--响铃)） |
 
-DeepSeek 现役内置模型为 `deepseek-v4-flash`（非思考）、`deepseek-v4-pro`（强推理）与
-`deepseek-v4-flash-vision-exp`（视觉 · 实验，图最多 384 token/张）；旧模型名 `deepseek-chat` /
-`deepseek-reasoner` 已停用。
+DeepSeek 现役内置模型为 `deepseek-flash`（快 · 便宜 · 支持图片）与 `deepseek-v4-pro`（强推理，
+不支持图片）。2026-09-21 官方把原 `deepseek-v4-flash`（纯文本）与 `deepseek-v4-flash-vision-exp`
+（视觉实验）合并为 `deepseek-flash`；旧名仍可调用，`model.json` 里存旧名会自动升级。更早的
+`deepseek-chat` / `deepseek-reasoner` 已停用。
 
 子 agent 默认跟着主 agent 当前的模型；想让某一次委派换一个模型（比如同一份材料分别找不同模型
 评审、对比结论），用自然语言提出即可，例如「分别用 DeepSeek 和 OpenAI 的模型评审这份设计」——

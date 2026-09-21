@@ -16,17 +16,23 @@ import java.util.List;
 
 /**
  * DeepSeek provider（现役、默认激活）。key 缺失即 unavailable。
- * 默认模型 deepseek-v4-pro（强推理；另有 deepseek-v4-flash 非思考款，旧 deepseek-chat/reasoner 2026-07-24 停用）。
+ *
+ * <p><b>模型清单 2026-09-21 变更</b>：官方把原 {@code deepseek-v4-flash}（纯文本）与
+ * {@code deepseek-v4-flash-vision-exp}（视觉实验）<b>合并</b>为单一 {@code deepseek-flash}，
+ * 该模型同时具备快、便宜与图像理解能力（官方模型表「图像理解 = 支持」）。旧名仍可调用，
+ * 但已下线、请求由同一后端服务。故清单由 3 项收敛为 2 项。
+ *
+ * <p>默认模型仍为 {@code deepseek-v4-pro}（强推理，<b>不支持图像理解</b>）；旧
+ * {@code deepseek-chat} / {@code deepseek-reasoner} 已于 2026-07-24 停用。
  */
 public final class DeepSeekProvider implements LlmProvider {
 
     private static final String DEFAULT_BASE_URL = "https://api.deepseek.com";
     // 首项即默认模型（*_MODELS 未配置时的回退清单，约定第一项为默认）。
     private static final List<ModelOption> MODELS = List.of(
-            new ModelOption("deepseek-v4-pro",   "deepseek-v4-pro",   "强推理 · 1.6T · 更慢更贵"),
-            new ModelOption("deepseek-v4-flash", "deepseek-v4-flash", "非思考 · 快 · 便宜"),
-            new ModelOption("deepseek-v4-flash-vision-exp", "deepseek-v4-flash-vision-exp",
-                    "视觉 · 实验 · 快（图最多 384 token/张）"));
+            new ModelOption("deepseek-v4-pro", "deepseek-v4-pro", "强推理 · 1.6T · 更慢更贵"),
+            new ModelOption("deepseek-flash",  "deepseek-flash",
+                    "快 · 便宜 · 支持图片"));
 
     private static final LlmTimeouts TIMEOUTS = LlmTimeouts.fromEnv();
 
@@ -172,8 +178,9 @@ public final class DeepSeekProvider implements LlmProvider {
     @Override public String defaultModel() { return models.get(0).id(); }
 
     /**
-     * DeepSeek 视觉能力按模型名单判定（见 {@link VisionModels}）：目前仅 deepseek-v4-flash-vision-exp
-     * 支持图片输入。这里显式覆写让判定清晰化，将来名单变化只需动 VisionModels。
+     * DeepSeek 视觉能力按模型名单判定（见 {@link VisionModels}）：{@code deepseek-flash}
+     * 支持图片输入（{@code deepseek-v4-pro} 不支持）。判定逻辑在 VisionModels 里，
+     * 这里显式覆写只是让「本 provider 的能力来源」一目了然——将来名单变化仍只动 VisionModels。
      */
     @Override
     public ModelCapabilities capabilities(String modelId) {

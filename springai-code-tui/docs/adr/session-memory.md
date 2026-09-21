@@ -11,7 +11,7 @@
 
 ```
 CodeTuiApplication.main
-  └─ DeepSeekChatModel(默认 deepseek-v4-flash)
+  └─ DeepSeekChatModel(默认 deepseek-v4-pro)
   └─ AgentTools.build(model, root, listener)  ──► 装配 ChatClient
   └─ new CodingAgent(client, listener, sessionId="code-tui-session", activeTurnId)
 

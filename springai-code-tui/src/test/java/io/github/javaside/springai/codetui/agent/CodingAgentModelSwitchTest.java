@@ -27,7 +27,7 @@ class CodingAgentModelSwitchTest {
     @Test
     void modelsAggregateAcrossProviders() {
         List<String> ids = agentWithRegistry().models().stream().map(ProviderModel::modelId).toList();
-        assertTrue(ids.contains("deepseek-v4-flash"));
+        assertTrue(ids.contains("deepseek-flash"));
         assertTrue(ids.contains("claude-sonnet-5"));
     }
 

@@ -19,7 +19,7 @@ class ProviderRegistryTest {
         assertEquals("deepseek", reg.active().id());
         assertEquals("deepseek-v4-pro", reg.activeModelId());
         List<String> ids = reg.allModels().stream().map(ProviderModel::modelId).toList();
-        assertTrue(ids.contains("deepseek-v4-flash"));
+        assertTrue(ids.contains("deepseek-flash"));
         assertTrue(ids.contains("claude-sonnet-5"));
         assertFalse(ids.contains("gpt-5.5"));   // openai 不可用，不列出
     }

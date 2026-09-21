@@ -36,7 +36,8 @@ import java.util.Map;
  * 故按 modelId 返回各自真实支持的档位（见 {@link #EFFORT_CAPS}），未收录的模型回退到保守的
  * low / medium / high 三档；关闭思考映射为 {@code none}（仅 supportsDisable=true 的模型）。
  * <p><b>图片输入只开放官方声明的模型</b>：OpenCode Go 文档目前仅确认
- * {@code deepseek-v4-flash-vision-exp} 支持图片，因此只为该模型开放视觉兑现；其他内置模型和
+ * {@code deepseek-flash} 支持图片（原名 {@code deepseek-v4-flash-vision-exp}，2026-09-21 随
+ * DeepSeek 官方改名同步），因此只为该模型开放视觉兑现；其他内置模型和
  * {@code OPENCODE_GO_MODELS} 自定义模型仍保持 TEXT_ONLY，避免把全局视觉前缀名单误套到未经 Go 网关
  * 验证的上游。图片沿用 {@link OpenAiChatModel} 的 OpenAI 兼容 {@code image_url} 通路。
  */
@@ -47,8 +48,7 @@ public final class OpencodeGoProvider implements LlmProvider {
     // 收录网关 /models 中当前可用的模型；坏模型（mimo-v2-pro/omni、hy3-preview、grok-4.5）不下发，见类注释。
     private static final List<ModelOption> MODELS = List.of(
             new ModelOption("deepseek-v4-pro",              "deepseek-v4-pro",              "强推理 · 复杂编码"),
-            new ModelOption("deepseek-v4-flash",            "deepseek-v4-flash",            "非思考 · 快 · 便宜"),
-            new ModelOption("deepseek-v4-flash-vision-exp", "deepseek-v4-flash-vision-exp", "视觉实验 · 图片理解"),
+            new ModelOption("deepseek-flash",               "deepseek-flash",               "快 · 便宜 · 支持图片"),
             new ModelOption("glm-5.2",                      "glm-5.2",                      "Agentic 编码 · 长上下文"),
             new ModelOption("glm-5.3",           "glm-5.3",           "GLM 新旗舰 · 低/高/最大档"),
             new ModelOption("glm-5.1",           "glm-5.1",           "长任务 · 自规划"),
@@ -82,7 +82,7 @@ public final class OpencodeGoProvider implements LlmProvider {
     private static final List<String> EFFORT_GLM53 = List.of("low", "high", "max");   // glm-5.3 上游只认这三档
     private static final Map<String, ThinkingCapabilities> EFFORT_CAPS = Map.ofEntries(
             Map.entry("deepseek-v4-pro",   ThinkingCapabilities.effort(true,  EFFORT_FULL)),
-            Map.entry("deepseek-v4-flash", ThinkingCapabilities.effort(true,  EFFORT_FULL)),
+            Map.entry("deepseek-flash",    ThinkingCapabilities.effort(true,  EFFORT_FULL)),
             Map.entry("glm-5.2",           ThinkingCapabilities.effort(true,  EFFORT_FULL)),
             Map.entry("glm-5.3",           ThinkingCapabilities.effort(false, EFFORT_GLM53)),
             Map.entry("glm-5.1",           ThinkingCapabilities.effort(true,  EFFORT_FULL)),
@@ -179,7 +179,7 @@ public final class OpencodeGoProvider implements LlmProvider {
 
     @Override
     public ModelCapabilities capabilities(String modelId) {
-        boolean officialVisionModel = "deepseek-v4-flash-vision-exp".equalsIgnoreCase(
+        boolean officialVisionModel = "deepseek-flash".equalsIgnoreCase(
                 modelId == null ? "" : modelId.trim());
         return new ModelCapabilities(officialVisionModel && VisionModels.enabled(), false);
     }

@@ -18,7 +18,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class ImageProfileTest {
 
-    // ── DeepSeek：真机实测值（2026-09-21，deepseek-v4-flash-vision-exp）──
+    // ── DeepSeek：真机实测值（2026-09-21，deepseek-flash；原名 deepseek-v4-flash-vision-exp，
+    //     2026-09-21 改名后复测口径一致：800x600→349、1200x900→694 逐字相同）──
 
     /** 实测：2442×1146 → prompt_tokens 1000（含少量文本开销，取整到官方 1024 封顶量级）。 */
     @Test

@@ -55,13 +55,13 @@
 | Anthropic | `claude-` |
 | 通义千问 | `qwen-vl`、`qwen2-vl`、`qwen2.5-vl`、`qwen3-vl` |
 | 智谱 | `glm-4v`、`glm-4.1v`、`glm-4.5v`、`glm-4.6v`、`glm-5.3-flash`、`glm-5v` |
-| DeepSeek | `deepseek-v4-flash-vision` |
+| DeepSeek | `deepseek-flash`、`deepseek-v4-flash`、`deepseek-v4-flash-vision` |
 
 **不在名单里的一律判「不支持」**——误判「不支持」只是拦住你、提示可见可改；误判「支持」是把图真发出去吃一个看不懂的 400。
 
 > **内置清单里能直接用上视觉的：OpenAI、Anthropic、DeepSeek 与智谱四家**（`gpt-6-astra`（2026-09-03
 > 发布，1.05M 上下文，前缀只精确到 astra——gpt-6 家族其他成员未经核实不进名单）、`gpt-5.6-*` / `gpt-5.5` /
-> `gpt-5.4`、`claude-*`、`deepseek-v4-flash-vision-exp`、`glm-5.3-flash`——最后这个是 2026-08-26 上线的
+> `gpt-5.4`、`claude-*`、`deepseek-flash`、`glm-5.3-flash`——最后这个是 2026-08-26 上线的
 > GLM-5 系首个原生多模态模型，1M 上下文，价格为 glm-5.3 的 1/10）。
 > 千问的内置清单（`qwen3.7-max`/`qwen3.7-plus`/`qwen3.6-flash`/`qwen3-coder-next`）仍无视觉模型——
 > 要在千问用视觉，得自己用 `DASHSCOPE_MODELS` 配一个 `-vl` 系 id；智谱的 `glm-4.6v`（2025-12 上线，
@@ -147,8 +147,12 @@ DeepSeek 每张图按服务端自动缩放后计费，**单张最多 384 token**
 key 的资源包绑在该端点，普通端点 `https://open.bigmodel.cn/api/paas/v4` 对这把 key 是 429 余额不足。
 普通计费端点未实际调用成功；它与 Coding Plan 端点共用 v4 兼容协议，因此上述协议层结论预计可迁移，但仍需独立真机确认。
 
-**DeepSeek**：`deepseek-v4-flash-vision-exp` 的<b>内联 base64 通道</b>已真机验证（纯红图 →
-模型答对颜色）。Files API 通道（`DEEPSEEK_VISION_TRANSPORT=files`）已做单测覆盖，未真机验证。
+**DeepSeek**：`deepseek-flash` 的<b>内联 base64 通道</b>已真机验证（纯红底 + 白字图 → 模型读对
+字母与背景色）。Files API 通道（`DEEPSEEK_VISION_TRANSPORT=files`）已做单测覆盖，未真机验证。
+
+> DeepSeek 于 2026-09-21 把原 `deepseek-v4-flash`（纯文本）与 `deepseek-v4-flash-vision-exp`
+> （视觉实验）<b>合并</b>为 `deepseek-flash`，该模型同时支持图片与思考。两个旧名仍可调用
+> （请求由同一后端服务），故名单里一并放行；存有旧名的 `model.json` 会在读取时自动升级为新名。
 
 ### 不支持的场景
 
