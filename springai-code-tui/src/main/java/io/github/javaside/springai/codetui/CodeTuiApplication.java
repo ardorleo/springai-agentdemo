@@ -47,6 +47,13 @@ public class CodeTuiApplication {
     private static final String PERMISSION_MODE_FLAG = "--permission-mode";
 
     public static void main(String[] args) throws Exception {
+        // -h/--help 必须是第一件事：帮助要能在「一家 key 都没配」的新机器上看到，所以它得早于
+        // key 检测（更别说 MCP / TUI）。此时还没起任何线程、还没装 JUL 桥，打完直接 return，
+        // JVM 自然退出——不需要 System.exit（那是给 OkHttp 残留线程准备的，这里还不存在）。
+        if (hasHelpFlag(args)) {
+            System.out.print(usageText());
+            return;
+        }
         // 必须早于 HTTP 客户端 / MCP / TUI 初始化：JUL 默认 ConsoleHandler 会绕过
         // 行内渲染器直写 stderr，使真实光标与差分帧失步。保留告警及异常栈，统一写入文件。
         // 先移除旧 handlers（含已有桥接）再安装，重复初始化也只会保留一个桥接。
@@ -255,6 +262,44 @@ public class CodeTuiApplication {
             state.pushInfo("• 上次用的模型 " + id + " 现在不可用，已回退到 "
                     + registry.activeModelId() + "。");
         }
+    }
+
+    /**
+     * 是否带帮助启动选项（{@code -h} / {@code --help}）。
+     *
+     * <p><b>必须整串精确相等</b>：{@code -help}、{@code --h} 这类前缀拼写的参数不得误判
+     * （与 {@link #hasBypassFlag} 同纪律）。
+     */
+    static boolean hasHelpFlag(String[] args) {
+        for (String a : args) {
+            if ("-h".equals(a) || "--help".equals(a)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * {@code -h} / {@code --help} 打印的用法说明。
+     *
+     * <p><b>「帮助不撒谎」契约</b>：这里列出的必须与实际能解析的启动参数一致——用户照着
+     * 帮助敲了一个不存在的参数，就是我们的错。{@code StartupHelpTest.usageCoversAllFlags}
+     * 钉着这条：新增启动参数时，本方法与该测试必须同步更新，漏一边测试就红。
+     */
+    static String usageText() {
+        return """
+                springai-code-tui —— 终端里的编码助手
+
+                用法：java -jar springai-code-tui.jar [选项]
+
+                选项：
+                  -c, --continue                  恢复最近一次会话（按会话文件最后修改时间选取）
+                  --permission-mode <模式>        起始权限档位：default / acceptEdits / plan
+                                                  （也接受 --permission-mode=plan 写法；优先级低于
+                                                  --dangerously-skip-permissions，高于配置文件 defaultMode）
+                  --dangerously-skip-permissions  启动即跳过权限询问（deny 规则与内置危险检查仍生效）
+                  -h, --help                      显示本帮助并退出
+                """;
     }
 
     /** 是否带续跑启动选项（仿 Claude Code 的 -c / --continue）。 */

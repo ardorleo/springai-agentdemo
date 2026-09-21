@@ -58,7 +58,9 @@
 10. `System.exit(exitCode)` —— 必须强制退，OkHttp Dispatcher 线程 keep-alive 60s。
 
 启动参数：`-c` / `--continue`、`--permission-mode <default|acceptEdits|plan>`、
-`--dangerously-skip-permissions`。`--permission-mode` **刻意不认 `bypass`**（启动即裸奔只该有
+`--dangerously-skip-permissions`、`-h` / `--help`（打印用法说明后直接退出，
+判定在 `main` 第一件事——早于 key 检测，没配任何 key 也能看帮助）。
+`--permission-mode` **刻意不认 `bypass`**（启动即裸奔只该有
 一个显眼开关）。
 
 ---
