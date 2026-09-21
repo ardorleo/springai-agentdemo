@@ -5,6 +5,8 @@ import dev.tamboui.text.Text;
 import dev.tamboui.tui.event.KeyCode;
 import dev.tamboui.tui.event.KeyEvent;
 import dev.tamboui.tui.event.KeyModifiers;
+import dev.tamboui.tui.event.PasteEvent;
+import dev.tamboui.toolkit.element.Element;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -14,6 +16,7 @@ import java.awt.image.BufferedImage;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -121,6 +124,54 @@ class AttachmentLineTest {
         Files.createDirectories(p.getParent() == null ? dir : p.getParent());
         ImageIO.write(new BufferedImage(40, 30, BufferedImage.TYPE_INT_RGB), "png", p.toFile());
         return p;
+    }
+
+    // 走真实粘贴处理器；反射仅用于取得私有输入元素，不在生产类新增测试入口。
+    private static void paste(CodeTuiView view, String text) throws Exception {
+        var type = Class.forName(CodeTuiView.class.getName() + "$InputBox");
+        var constructor = type.getDeclaredConstructor(CodeTuiView.class);
+        constructor.setAccessible(true);
+        Element input = (Element) constructor.newInstance(view);
+        assertTrue(input.handlePasteEvent(new PasteEvent(text)).isHandled());
+    }
+
+    @Test
+    void firstImagePasteAfterTextShowsAttachmentImmediately(@TempDir Path root) throws Exception {
+        Path first = png(root, "微信图片.png");
+        Path second = png(root, "second.png");
+        CodeTuiView v = view(root);
+        v.setInputForTest("看看这张图");
+        paste(v, first.toString());
+        assertEquals("看看这张图 " + first, v.inputTextForTest());
+        assertTrue(ViewScreen.of(v).contains("已附带 1 张图片"));
+        paste(v, second.toString());
+        assertTrue(ViewScreen.of(v).contains("已附带 2 张图片"));
+    }
+
+    @Test
+    void imagePasteInMiddleSeparatesBothSides(@TempDir Path root) throws Exception {
+        Path image = png(root, "截图 空格.png");
+        for (String payload : java.util.List.of("'" + image + "'", "\"" + image + "\"",
+                image.toString().replace(" ", "\\ "))) {
+            CodeTuiView v = view(root);
+            v.setInputForTest("看图");
+            v.feedKeyForTest(KeyEvent.ofKey(KeyCode.LEFT));
+            paste(v, payload);
+            assertEquals("看 " + payload + " 图", v.inputTextForTest());
+            assertTrue(ViewScreen.of(v).contains("已附带 1 张图片"));
+        }
+    }
+
+    @Test
+    void normalPasteAndExistingWhitespaceRemainUnchanged(@TempDir Path root) throws Exception {
+        CodeTuiView v = view(root);
+        v.setInputForTest("文字");
+        paste(v, "普通文本\n下一行");
+        assertEquals("文字普通文本\n下一行", v.inputTextForTest());
+        Path image = png(root, "a.png");
+        v.setInputForTest("看图 ");
+        paste(v, image + " ");
+        assertEquals("看图 " + image + " ", v.inputTextForTest());
     }
 
     /** Ctrl+X。构造写法照抄 {@code CodeTuiViewEditShortcutTest.ctrl(char)}。 */

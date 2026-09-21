@@ -20,6 +20,24 @@ final class OpenAiTimeouts {
 
     private OpenAiTimeouts() {}
 
+    /**
+     * spring-ai {@code OpenAiChatOptions} 的<b>每请求</b> timeout 必须显式取此值（ZERO）。
+     *
+     * <p><b>为什么不能不设</b>：spring-ai 2.0.1 的 {@code OpenAiChatOptions.builder()} 默认
+     * {@code timeout=PT1M} 且 {@code timeout((Duration) null)} 被静默忽略（无法清回 null）。
+     * {@code OpenAiChatModel.buildRequestOptions} 见非 null 即写入 {@code RequestOptions.timeout}，
+     * openai-java SDK 在<b>每次</b> {@code newCall} 用它重建 OkHttp 超时：{@code callTimeout=60s}，
+     * 同时把 base client 上经 {@link #of} 配好的 read/connect/write 四元组顶成 SDK 默认——
+     * 总时长超 60s 的流式回合（大上下文预填充 + thinking + 长输出）被 watchdog cancel →
+     * {@code OpenAIIoException: Stream failed}，重试同限必挂（2026-09-21 生产事故根因）。
+     *
+     * <p><b>ZERO 的语义</b>：spring-ai 把该 Duration 映射为 {@code Timeout.request}，
+     * {@code request=0} 在 OkHttp 即 {@code callTimeout(0)}=禁用总时长——与本类对 base client
+     * 的 {@code request=ZERO} 同一策略（流式不被墙钟砍断）。空闲兜底由 code-tui 自己的
+     * {@code StreamIdleTimeoutChatModel}（默认 300s）负责。
+     */
+    static final java.time.Duration CHAT_OPTIONS_TOTAL_TIMEOUT = java.time.Duration.ZERO;
+
     static Timeout of(LlmTimeouts timeouts) {
         return Timeout.builder()
                 .connect(timeouts.connectTimeout())

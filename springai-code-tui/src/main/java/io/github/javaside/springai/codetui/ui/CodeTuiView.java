@@ -1566,6 +1566,22 @@ public final class CodeTuiView extends InlineApp {
 
         @Override
         public EventResult handlePasteEvent(PasteEvent event) {
+            // 终端拖图只插入路径，不保证与已有文字之间有空白。
+            // 仅对整段都是可识别图片路径的粘贴补边界，普通文本/代码原样交给编辑器。
+            String pasted = event.text();
+            ImageAttachmentDetector.Result detected = imageDetector.detectWithOverflow(pasted, root);
+            int imageCount = detected.images().size() + detected.overflow();
+            if (imageCount > 0 && imageCount == ImageAttachmentDetector.tokenize(pasted).size()) {
+                String line = inputState.getLine(inputState.cursorRow());
+                int col = inputState.cursorCol();
+                boolean left = col > 0 && !Character.isWhitespace(line.charAt(col - 1))
+                        && !Character.isWhitespace(pasted.charAt(0));
+                boolean right = col < line.length() && !Character.isWhitespace(line.charAt(col))
+                        && !Character.isWhitespace(pasted.charAt(pasted.length() - 1));
+                if (left || right) {
+                    event = new PasteEvent((left ? " " : "") + pasted + (right ? " " : ""));
+                }
+            }
             EventResult r = inputKeys.handlePasteEvent(event);      // 多行粘贴
             publishLocalViewChange();   // 粘贴改文本：附件行/菜单结构可能变（本地状态，无 Agent 事件）
             return r;

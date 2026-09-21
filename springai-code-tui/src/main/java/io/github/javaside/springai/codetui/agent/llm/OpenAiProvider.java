@@ -76,7 +76,8 @@ public final class OpenAiProvider implements LlmProvider {
             m = OpenAiChatModel.builder()
                     .openAiClient(syncB.build())
                     .openAiClientAsync(asyncB.build())
-                    .options(OpenAiChatOptions.builder().model(defaultModel()).build())
+                    .options(OpenAiChatOptions.builder().model(defaultModel())
+                            .timeout(OpenAiTimeouts.CHAT_OPTIONS_TOTAL_TIMEOUT).build())
                     .build();
             chatModel = m;
         }
@@ -85,7 +86,8 @@ public final class OpenAiProvider implements LlmProvider {
 
     @Override
     public ChatOptions options(String modelId) {
-        return OpenAiChatOptions.builder().model(modelId).build();
+        return OpenAiChatOptions.builder().model(modelId)
+                .timeout(OpenAiTimeouts.CHAT_OPTIONS_TOTAL_TIMEOUT).build();
     }
 
     @Override
@@ -104,7 +106,8 @@ public final class OpenAiProvider implements LlmProvider {
             return options(modelId);
         }
         String effort = config.mode() == ThinkingMode.DISABLED ? "none" : config.effort();
-        return OpenAiChatOptions.builder().model(modelId).reasoningEffort(effort).build();
+        return OpenAiChatOptions.builder().model(modelId).reasoningEffort(effort)
+                .timeout(OpenAiTimeouts.CHAT_OPTIONS_TOTAL_TIMEOUT).build();
     }
 
     @Override public List<ModelOption> models() { return models; }

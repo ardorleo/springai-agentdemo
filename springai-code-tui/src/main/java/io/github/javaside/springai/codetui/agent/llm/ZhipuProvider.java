@@ -81,7 +81,8 @@ public final class ZhipuProvider implements LlmProvider {
             m = OpenAiChatModel.builder()
                     .openAiClient(syncClient)
                     .openAiClientAsync(asyncClient)
-                    .options(OpenAiChatOptions.builder().model(defaultModel()).build())
+                    .options(OpenAiChatOptions.builder().model(defaultModel())
+                            .timeout(OpenAiTimeouts.CHAT_OPTIONS_TOTAL_TIMEOUT).build())
                     .build();
             chatModel = m;
         }
@@ -90,7 +91,8 @@ public final class ZhipuProvider implements LlmProvider {
 
     @Override
     public ChatOptions options(String modelId) {
-        return OpenAiChatOptions.builder().model(modelId).build();
+        return OpenAiChatOptions.builder().model(modelId)
+                .timeout(OpenAiTimeouts.CHAT_OPTIONS_TOTAL_TIMEOUT).build();
     }
 
     @Override
@@ -119,6 +121,7 @@ public final class ZhipuProvider implements LlmProvider {
                 "type", config.mode() == ThinkingMode.ENABLED ? "enabled" : "disabled");
         OpenAiChatOptions.Builder builder = OpenAiChatOptions.builder()
                 .model(modelId)
+                .timeout(OpenAiTimeouts.CHAT_OPTIONS_TOTAL_TIMEOUT)
                 .extraBody(java.util.Map.of("thinking", thinking));
         if (config.effort() != null) {
             builder.reasoningEffort(config.effort());
