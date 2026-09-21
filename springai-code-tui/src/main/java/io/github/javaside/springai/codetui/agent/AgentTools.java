@@ -47,11 +47,10 @@ import io.github.javaside.springai.codetui.agent.subagent.SubagentTool;
 import io.github.javaside.springai.codetui.agent.tools.BochaWebSearchTool;
 import io.github.javaside.springai.codetui.agent.tools.PermissionCallback;
 import io.github.javaside.springai.codetui.agent.tools.RenamedToolCallback;
-import io.github.javaside.springai.codetui.agent.tools.ResilientToolCallingManager;
-import io.github.javaside.springai.codetui.agent.tools.ResilientToolExecutionExceptionProcessor;
 import io.github.javaside.springai.codetui.agent.tools.TimeLimitedToolCallback;
 import io.github.javaside.springai.codetui.agent.tools.TodoWriteToolAdapter;
 import io.github.javaside.springai.codetui.agent.tools.ToolEventCallback;
+import io.github.javaside.springai.codetui.agent.tools.TurnToolLimitWiring;
 import org.springaicommunity.agent.tools.AskUserQuestionTool;
 import org.springaicommunity.agent.tools.AutoMemoryTools;
 import org.springaicommunity.agent.tools.FileSystemTools;
@@ -65,8 +64,6 @@ import org.springaicommunity.agent.utils.AgentEnvironment;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
-import org.springframework.ai.model.tool.DefaultToolCallingManager;
-import org.springframework.ai.tool.execution.ToolExecutionExceptionProcessor;
 import org.springframework.ai.session.DefaultSessionService;
 import org.springframework.ai.session.SessionRepository;
 import org.springframework.ai.session.SessionService;
@@ -687,16 +684,12 @@ public final class AgentTools {
             // （工具结果落库与「构建下一次 prompt」是同一步，会话存储层看不到这个位置）。
             // 若将来主 agent 也用上 RetryingChatModel，本层必须仍在它<b>外面</b>——反了的话重试时
             // 队列已被第一次尝试排空，插话会在一次网络抖动后静默消失。
-            // 工具名解析失败容错：模型拼错工具名（如 BochaWebSearch → BoochaWebSearch）时，
-            // Spring AI 默认直接抛异常毁掉整回合。包一层 ResilientToolCallingManager，
-            // 把「工具不存在，请用正确工具名重试」等信息回给模型让它自己纠正（见该类的 javadoc）。
+            // 工具执行接线统一收口 TurnToolLimitWiring（与子 agent 同源，防两路漂移）：Resilient 容错
+            // （工具名拼错如 BochaWebSearch→BoochaWebSearch、执行异常 → 转错误文本回模型自纠）
+            // + Spring AI 2.0.1 回合限流改默认不限（框架裸默认 40/150/THROW 会裸抛杀整回合；
+            // 要熔断时 CODETUI_MAX_CALLS_PER_TOOL / CODETUI_MAX_TOTAL_TOOL_CALLS 可配，配了撞限也只回错误文本）。
             ToolCallingAdvisor.Builder<?> toolAdvisorBuilder = ToolCallingAdvisor.builder()
-                    .toolCallingManager(new ResilientToolCallingManager(
-                            DefaultToolCallingManager.builder()
-                                    .observationRegistry(ObservationRegistry.NOOP)
-                                    // 工具执行异常不终止回合：转成错误文本回给模型让它继续（见该类 javadoc）。
-                                    .toolExecutionExceptionProcessor(new ResilientToolExecutionExceptionProcessor())
-                                    .build()));
+                    .toolCallingManager(TurnToolLimitWiring.create());
             ChatClient c = ChatClient.builder(
                     InterjectingChatModel.wrap(visionModel, interjections),
                     ObservationRegistry.NOOP, null, null, toolAdvisorBuilder)

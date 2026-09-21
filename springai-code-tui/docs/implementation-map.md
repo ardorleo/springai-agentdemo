@@ -129,6 +129,7 @@
 | 工具名错 | `ResilientToolCallingManager` | 只拦 `No ToolCallback found`，按 tool call 顺序区分「已执行未回传/不存在/未执行」三种状态回给模型 |
 | 工具异常 | `ResilientToolExecutionExceptionProcessor` | 任何工具异常转文本、**绝不 rethrow**；带 cause 链 + 栈前 6 帧 |
 | 工具超时 | `TimeLimitedToolCallback` | daemon 池 + `future.get(timeout)`；**ThreadLocal 不跨线程**，内层拿不到 turnId，目前只用于 Brave |
+| 回合工具限流 | `TurnToolLimitWiring` | Spring AI 2.0.1 裸默认 40/150/THROW——`ToolCallLimitExceededException` 是 RuntimeException，穿透两道 Resilient 防线杀整回合；统一接线（主/子 agent 同源）改**默认不限**、env 可配、撞限只回错误文本 |
 
 ### 2.5 用量采集
 
@@ -1207,6 +1208,8 @@ OSC 0/2 双发是因为不同终端认的不是同一个。`sanitize` 剥掉全�
 | `CODETUI_SUBAGENT_CONCURRENCY` | `AgentTools` → `SubagentRunner` | 4，钳 [1,32] |
 | `CODETUI_BACKGROUND_CONCURRENCY` | 同上 | 4，钳 [1,32]；队列容量 `DEFAULT_BACKGROUND_QUEUE=16`（不可配） |
 | `CODETUI_TASK_OUTPUT_TIMEOUT_SECONDS` | `AgentTools` → `BackgroundTaskTool` | 300，钳 [1,3600] |
+| `CODETUI_MAX_CALLS_PER_TOOL` | `TurnToolLimitWiring` | 回合内单工具上限；**默认不限**，撞限回错误文本不杀回合；非法/非正数视为不限 |
+| `CODETUI_MAX_TOTAL_TOOL_CALLS` | `TurnToolLimitWiring` | 回合内工具总量上限；**默认不限**，语义同上 |
 | `BOCHA_API_KEY` / `BOCHA_SEARCH_COUNT` | `AgentTools` | 配了才注册 `BochaWebSearch` |
 | `BRAVE_API_KEY` / `BRAVE_SEARCH_COUNT` | 同上 | 配了才注册 `BraveWebSearch` |
 | `CODETUI_CO_AUTHOR` | `coAuthorGuide` | 未配置则提示词里无署名段 |

@@ -8,12 +8,15 @@ import io.github.javaside.springai.codetui.agent.mcp.McpRegistry;
 import io.github.javaside.springai.codetui.agent.permission.PermissionMode;
 import io.github.javaside.springai.codetui.agent.prompt.PermissionModePrompt;
 import io.github.javaside.springai.codetui.agent.tools.ToolEventCallback;
+import io.github.javaside.springai.codetui.agent.tools.TurnToolLimitWiring;
 import io.github.javaside.springai.codetui.ui.update.UiChangeListener;
 import io.github.javaside.springai.codetui.ui.update.UiChangeSource;
 import io.github.javaside.springai.codetui.ui.update.UiDirty;
+import io.micrometer.observation.ObservationRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 
@@ -42,11 +45,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>用激活 provider 的 chatModel 建子 agent 专用 ChatClient（过滤后工具 + system=spec.systemPrompt），
  * <b>不挂</b> SessionMemory advisor——子 agent 上下文独立。model 空→跟随激活 provider。
  *
- * <p><b>工具调用（Spring AI 2.0）</b>：2.0 已把工具执行循环从 ChatModel 内部搬进 advisor 链，且
- * {@code ChatClient.builder(model)} 会<b>自动注册</b> {@code ToolCallingAdvisor}（带 observation 的
- * {@code ToolCallingManager}），故这里<b>不再</b>显式挂 {@code ToolCallAdvisor}（该类 2.0 起 deprecated 且待删除；
- * 显式挂反而会抑制自动注册、丢掉工具调用可观测性）。与主 agent（{@code AgentTools}）一致：只 {@code defaultTools}，
- * 工具循环交给自动注册的 advisor。
+ * <p><b>工具调用（Spring AI 2.0.1）</b>：2.0 已把工具执行循环从 ChatModel 内部搬进 advisor 链，
+ * {@code ChatClient.builder(model)} 会自动注册一个默认 {@code ToolCallingAdvisor}——但其
+ * {@code ToolCallingManager} 是框架裸默认：2.0.1 起自带 40/150/THROW 回合限流（撞限裸抛
+ * RuntimeException 杀整回合），且没有本工程的 Resilient 容错。故这里<b>显式</b>挂
+ * {@code ToolCallingAdvisor}，manager 与主 agent（{@code AgentTools}）同源取自
+ * {@code TurnToolLimitWiring}（容错 + 限流策略见该类 javadoc）。可观测性不受影响：子 agent
+ * 工具活动经 {@link ToolEventCallback} 事件上报，本就不走 micrometer observation。
  *
  * <p><b>变化通知纪律（事件驱动 UI，Task 4）</b>：本类同时是 {@link UiChangeSource}——
  * <ul>
@@ -259,14 +264,17 @@ public final class SubagentRunner implements UiChangeSource {
      * 模型、工具集、系统提示、重试策略全部同源——否则两条路会各自漂移，
      * 而「后台任务的行为和前台不一样」是最难排查的那类缺陷。
      *
-     * <p>Spring AI 2.0：defaultTools 取代已废弃的 defaultToolCallbacks；工具调用 advisor 由 ChatClient
-     * 自动注册，不再显式挂（见类注释）。传 Object[]（每个元素是 ToolCallback）——与主 agent 的
+     * <p>Spring AI 2.0：defaultTools 取代已废弃的 defaultToolCallbacks；工具调用 advisor 显式挂
+     * {@code TurnToolLimitWiring} 的 manager（见类注释——2.0.1 框架默认限流/容错会杀子 agent 回合，
+     * 不能吃自动注册的默认值）。传 Object[]（每个元素是 ToolCallback）——与主 agent 的
      * defaultTools(toolsWithTask) 同构。RetryingChatModel：子 agent 走阻塞 call()，代理网关会间歇性回
      * 200+空 body（SDK 抛 *InvalidDataException、自带重试不覆盖），在 ChatModel 层按 LLM call 粒度重试。
      */
     private String execute(SubagentSpec spec, String prompt, Map<String, Object> toolContext) {
         ProviderRegistry.RequestSelection selection = resolveSelection(spec);
-        ChatClient client = ChatClient.builder(RetryingChatModel.wrap(selection.provider().chatModel()))
+        ChatClient client = ChatClient.builder(RetryingChatModel.wrap(selection.provider().chatModel()),
+                ObservationRegistry.NOOP, null, null,
+                ToolCallingAdvisor.builder().toolCallingManager(TurnToolLimitWiring.create()))
                 .defaultTools(effectiveTools(spec).toArray())
                 .build();
         ChatOptions options = selection.options();
