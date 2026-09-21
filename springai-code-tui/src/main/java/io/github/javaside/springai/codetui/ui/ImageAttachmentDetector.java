@@ -94,7 +94,14 @@ public final class ImageAttachmentDetector {
                 // 会把它吃成 "C:shotsa.png"。引号已经界定了词边界，无需再靠转义。
                 escaped = true;
             } else if (quote != 0) {
-                if (c == quote) quote = 0; else cur.append(c);
+                if (c == quote) {
+                    quote = 0;
+                    // 闭引号即出词：引号包裹本身就是完整的词边界。否则 "path"看 会把「看」
+                    // 粘进词里（path看 = 不存在的文件）——占位符展开后路径紧跟文字正是这个形态。
+                    if (cur.length() > 0) { out.add(cur.toString()); cur.setLength(0); }
+                } else {
+                    cur.append(c);
+                }
             } else if (c == '\'' || c == '"') {
                 quote = c;
             } else if (Character.isWhitespace(c)) {

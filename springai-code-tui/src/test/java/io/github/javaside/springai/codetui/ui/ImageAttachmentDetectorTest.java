@@ -54,6 +54,20 @@ class ImageAttachmentDetectorTest {
     // ── 拖拽的转义形态 ───────────────────────────────────────
 
     /**
+     * 引号闭合处必须断词：占位符展开成 {@code "path"看}（闭引号后紧跟文字）时，
+     * 若字符继续拼进同一个词，路径就变成 {@code path看} 这个不存在的文件。
+     * 引号包裹本身就是完整的词边界。
+     */
+    @Test
+    void quotedTokenEndsAtClosingQuoteEvenWhenFollowedByText() throws Exception {
+        png(root, "docs/bug.png");
+        List<DetectedImage> got = detect("看下 \"docs/bug.png\"里这个报错");
+        assertEquals(1, got.size(),
+                "闭引号后紧跟文字没有断词，路径粘连成不存在的文件：" + got);
+        assertEquals("bug.png", got.get(0).name());
+    }
+
+    /**
      * macOS Terminal.app / iTerm2 拖拽时用反斜杠转义空格。漏了这条，
      * 「从桌面拖中文截图」（默认文件名就带空格）完全失效。
      */
@@ -119,14 +133,16 @@ class ImageAttachmentDetectorTest {
 
     // ── 上限 ────────────────────────────────────────────────
 
-    /** 与已有的 VisionBudget.MAX_USER_IMAGES 同一个常量，不另设。 */
+    /** 与已有的 VisionBudget.MAX_USER_IMAGES 同一个常量，不另设。12 张钉住放宽后的 10：超 10 保留 10、溢出如实报 2。 */
     @Test
     void capsAtMaxUserImagesAndReportsOverflow() throws Exception {
-        for (int i = 0; i < 5; i++) png(root, "i" + i + ".png");
-        ImageAttachmentDetector.Result r = new ImageAttachmentDetector()
-                .detectWithOverflow("i0.png i1.png i2.png i3.png i4.png", root);
+        for (int i = 0; i < 12; i++) png(root, "i" + i + ".png");
+        ImageAttachmentDetector.Result r = new ImageAttachmentDetector().detectWithOverflow(
+                "i0.png i1.png i2.png i3.png i4.png i5.png i6.png i7.png i8.png i9.png i10.png i11.png",
+                root);
+        assertEquals(10, r.images().size(), "每请求用户图上限应为 10（各模型口径均容得下）");
+        assertEquals(2, r.overflow());
         assertEquals(VisionBudget.MAX_USER_IMAGES, r.images().size());
-        assertEquals(5 - VisionBudget.MAX_USER_IMAGES, r.overflow());
     }
 
     // ── 缓存 ────────────────────────────────────────────────

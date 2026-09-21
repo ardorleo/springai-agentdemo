@@ -271,10 +271,14 @@ class VisionMaterializerTest {
      */
     @Test
     void userImagesBeyondQuotaAreMarkedBudgetExceeded() throws Exception {
-        png("a.png"); png("b.png"); png("c.png"); png("d.png");
-        String text = "四张图\n" + ref("a.png", "a.png") + "\n" + ref("b.png", "b.png")
-                + "\n" + ref("c.png", "c.png") + "\n" + ref("d.png", "d.png");
-        Prompt p = new Prompt(List.of(new UserMessage(text)));
+        // 12 张 > 上限 10：必须超过配额才能测出超额路径（上限放宽到 10 后 4 张已不够用）
+        StringBuilder text = new StringBuilder("十二张图");
+        for (char c = 'a'; c <= 'l'; c++) {
+            String name = c + ".png";
+            png(name);
+            text.append('\n').append(ref(name, name));
+        }
+        Prompt p = new Prompt(List.of(new UserMessage(text.toString())));
 
         String out = materializer().materialize(p, true).getInstructions().get(0).getText();
 
@@ -293,8 +297,9 @@ class VisionMaterializerTest {
      * 这条两张大图没超张数配额，是第二张的 token 越了每请求上限。
      * 少了这条，{@code admit} 返回 false 那个分支的标注就是无人验证的。
      *
-     * <p>用<b>小上限</b>的预算实例来构造该局面：默认上限 16000 高于「3 用户图 + 1 工具图」
-     * 的真实成本（每请求最多 4 张，约 4–13k），正常路径根本触发不到这个分支。
+     * <p>用<b>小上限</b>的预算实例来构造该局面：默认上限 32000 高于「10 用户图 + 1 工具图」
+     * 的真实成本（约 10–33k，见 {@code VisionBudgetTest#defaultTokenCapAdmitsFullQuotaOfWorstCaseImages}），
+     * 正常路径根本触发不到这个分支。
      */
     @Test
     void tokenBudgetOverflowIsMarkedBudgetExceeded() throws Exception {

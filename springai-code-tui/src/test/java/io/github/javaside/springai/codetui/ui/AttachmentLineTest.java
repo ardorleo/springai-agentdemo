@@ -142,9 +142,11 @@ class AttachmentLineTest {
         CodeTuiView v = view(root);
         v.setInputForTest("看看这张图");
         paste(v, first.toString());
-        assertEquals("看看这张图 " + first, v.inputTextForTest());
+        // 占位符显示：路径太长，输入框里只放 [IMAGE1]（类似 Claude Code 的 [Image #1]）
+        assertEquals("看看这张图 [IMAGE1]", v.inputTextForTest());
         assertTrue(ViewScreen.of(v).contains("已附带 1 张图片"));
         paste(v, second.toString());
+        assertEquals("看看这张图 [IMAGE1] [IMAGE2]", v.inputTextForTest());
         assertTrue(ViewScreen.of(v).contains("已附带 2 张图片"));
     }
 
@@ -157,7 +159,7 @@ class AttachmentLineTest {
             v.setInputForTest("看图");
             v.feedKeyForTest(KeyEvent.ofKey(KeyCode.LEFT));
             paste(v, payload);
-            assertEquals("看 " + payload + " 图", v.inputTextForTest());
+            assertEquals("看 [IMAGE1] 图", v.inputTextForTest());
             assertTrue(ViewScreen.of(v).contains("已附带 1 张图片"));
         }
     }
@@ -171,7 +173,32 @@ class AttachmentLineTest {
         Path image = png(root, "a.png");
         v.setInputForTest("看图 ");
         paste(v, image + " ");
-        assertEquals("看图 " + image + " ", v.inputTextForTest());
+        assertEquals("看图 [IMAGE1]", v.inputTextForTest());
+    }
+
+    /** Finder 多选一次拖多张：每个路径各占一个占位符，编号连续递增。 */
+    @Test
+    void multiImagePasteCreatesSequentialPlaceholders(@TempDir Path root) throws Exception {
+        Path a = png(root, "a.png");
+        Path b = png(root, "b.png");
+        Path c = png(root, "c.png");
+        CodeTuiView v = view(root);
+        v.setInputForTest("对比");
+        paste(v, a + "\n" + b + "\n" + c);
+        assertEquals("对比 [IMAGE1] [IMAGE2] [IMAGE3]", v.inputTextForTest());
+        assertTrue(ViewScreen.of(v).contains("已附带 3 张图片"));
+    }
+
+    /** 提交后取消态复位……（下方提交链路用例复用 submit） */
+    @Test
+    void placeholderSurvivesEditingAndStillAttaches(@TempDir Path root) throws Exception {
+        Path image = png(root, "a.png");
+        CodeTuiView v = view(root);
+        paste(v, image.toString());
+        // 用户在占位符后面继续打字——占位符只是文本，编辑语义与普通字符一致
+        v.feedKeyForTest(KeyEvent.ofChar('看'));
+        assertEquals("[IMAGE1]看", v.inputTextForTest());
+        assertTrue(ViewScreen.of(v).contains("已附带 1 张图片"));
     }
 
     /** Ctrl+X。构造写法照抄 {@code CodeTuiViewEditShortcutTest.ctrl(char)}。 */

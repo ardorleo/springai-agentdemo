@@ -9,9 +9,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class VisionBudgetTest {
 
     @Test
-    void userImagesAreCappedAtThree() {
-        assertEquals(3, VisionBudget.MAX_USER_IMAGES);
+    void userImagesAreCappedAtTen() {
+        // 10 = 各模型每请求张数口径里最紧的一档（Qwen-VL 硬顶 10），依据见常量注释
+        assertEquals(10, VisionBudget.MAX_USER_IMAGES);
         assertEquals(1, VisionBudget.MAX_TOOL_IMAGES);
+    }
+
+    /**
+     * ★ token 上限不能成为张数配额的隐形瓶颈：默认上限必须容得下「10 张满档用户图」。
+     * 最贵档是 OpenAI 聚合网关（实测公式无单图封顶，2048×1152 ≈ 2.8k/张）；
+     * 上限 16k 的话第 6 张就拒，10 张配额对它名存实亡。
+     */
+    @Test
+    void defaultTokenCapAdmitsFullQuotaOfWorstCaseImages() {
+        VisionBudget.Session s = new VisionBudget().open("t");
+        long worstCaseImage = 2_800;
+        for (int i = 0; i < VisionBudget.MAX_USER_IMAGES; i++) {
+            assertTrue(s.admit(worstCaseImage),
+                    "第 " + (i + 1) + " 张满档图被默认 token 上限挡下（张数配额名存实亡）");
+        }
+        // 仍必须有界：10 张之后继续加图要拒得住（28k + 5.6k = 33.6k > 32k）
+        assertFalse(s.admit(worstCaseImage * 2), "超过上限后应拒住，不能无界放行");
     }
 
     @Test

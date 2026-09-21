@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * 视觉预算：每请求分来源配额 + 每回合累计上限。
  *
- * <p><b>为什么配额分来源</b>：用户贴的图与工具产的图不是同一种负载。用户一次贴 1–3 张，
+ * <p><b>为什么配额分来源</b>：用户贴的图与工具产的图不是同一种负载。用户一次贴 1–10 张，
  * 那是他这一轮的<b>全部意图</b>；截图循环一个回合能产几十张，且旧截图几乎没有价值。
  * 若一视同仁按「从新到旧」取，「照这张稿子改」的稿子会被随后 Read 的三张图挤掉 ——
  * 功能在最典型的用法上直接失效。故<b>用户图保底不淘汰</b>，工具图只在彼此间竞争取最新一张。
@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 全部意图，中途消失会让「照这张图改」在回合后半段直接失效。拆开之后两边的天花板各自可算：
  * <ul>
  *   <li>工具图 12 × ~1.8k ≈ 21.6k token（只发最新一张，故上限即轮数）；</li>
- *   <li>用户图 36 × ~1.8k ≈ 65k token（2 张图可撑 18 轮、3 张可撑 12 轮）。</li>
+ *   <li>用户图 120 × ~1.8k ≈ 216k token（2 张图可撑 60 轮、贴满 10 张可撑 12 轮）。</li>
  * </ul>
  * 两边都可经环境变量覆盖，见 {@link #TOOL_TURN_BUDGET_ENV} / {@link #USER_TURN_BUDGET_ENV}。
  *
@@ -31,38 +31,45 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class VisionBudget {
 
-    /** 每请求：用户当轮贴图上限（保底，不参与淘汰）。 */
-    public static final int MAX_USER_IMAGES = 3;
+    /**
+     * 每请求：用户当轮贴图上限（保底，不参与淘汰）。
+     *
+     * <p>10 的依据是各模型每请求张数口径里最紧的一档：Claude 直连 API 允许 100 张（200k 上下文模型）、
+     * Qwen-VL 硬顶 10 张（超限报 {@code Must be [0, 10]}）、智谱 GLM-4V-Plus 官方口径 5 张
+     * （新一代 GLM-4.5V 未公布张数上限）、OpenAI 无明确数字（社区实测 ~16 张）、DeepSeek 按 token 计
+     * 无张数限制。取 10 恰好贴住 Qwen 的硬顶，其余家全部容得下。
+     */
+    public static final int MAX_USER_IMAGES = 10;
     /** 每请求：工具产图上限（取最新一张）。 */
     public static final int MAX_TOOL_IMAGES = 1;
     /**
      * 每请求：视觉 token 硬上限。
      *
-     * <p><b>为什么是 16000 而不是原来的 6000</b>：6000 是在「估算器对所有 provider 套用
-     * Anthropic 口径 {@code 宽×高/750}」时定的——那个口径对 DeepSeek 实测高估 3.6 倍
-     * （2442×1146 的截图：旧公式 3731，真机约 1000）。高估 3.6 倍的上限等于把可用张数
-     * 压到 1/3：用户贴 3 张图就撞顶，而真实成本远未到。这正是「额度感觉太少」的根源。
+     * <p><b>为什么是 32000</b>：必须容得下「{@link #MAX_USER_IMAGES} 张满档用户图」，
+     * 否则 token 上限成为张数配额的隐形瓶颈——张数放到 10 后，最贵档是 OpenAI 聚合网关
+     * （实测公式无单图封顶，2048×1152 满档截图 ≈ 2.8k/张），10 张 ≈ 28k；16k 在第 6 张
+     * 就拒，10 张配额对它名存实亡。取 32k 留出余量。
      *
-     * <p>改成按 provider 估算（见 {@link ImageProfile}）后，同一笔钱能放下的图显著变多，
-     * 因此上限按<b>真实成本</b>重定：典型截图（约 1k token/张）× 6 张 ≈ 6k，留出余量到 16k，
-     * 足以容纳「3 张用户图 + 大尺寸工具图」而不误伤。
+     * <p>对模型上下文不构成压力：主流视觉模型 200k 起步（DeepSeek 1M），单请求 30k 视觉
+     * token 占比很小。真正防成本失控的是回合额度（{@link #MAX_USER_TURN_DELIVERIES}），
+     * 那道闸管跨轮累计，本上限只管单次请求体积。
      *
-     * <p>仍<b>必须有界</b>：这是唯一约束单次请求体积的闸门（回合额度约束的是跨轮累计）。
+     * <p>仍<b>必须有界</b>：一张图估算异常（如未知口径兜底档高估）不该顶掉整个请求。
      */
-    public static final long MAX_REQUEST_TOKENS = 16_000L;
+    public static final long MAX_REQUEST_TOKENS = 32_000L;
     /** 每回合：工具图累计兑现次数（张·次）上限。工具图每请求只发最新一张，故上限即轮数。 */
     public static final int MAX_TOOL_TURN_DELIVERIES = 12;
     /**
      * 每回合：用户图累计兑现次数（张·次）上限。
      *
-     * <p>比工具图宽：工具图每请求只发 1 张，而用户图最多 3 张同时在场，故用户图每轮消耗是工具图的
-     * 1–3 倍。取 36（= 3 张 × 12 轮）让「贴满 3 张」也能撑过 12 轮工具迭代，与工具图口径对齐；
-     * 2 张图则可撑 18 轮。
+     * <p>比工具图宽：工具图每请求只发 1 张，而用户图最多 {@link #MAX_USER_IMAGES} 张同时在场，
+     * 故用户图每轮消耗是工具图的 1–10 倍。取 120（= 10 张 × 12 轮）让「贴满 10 张」也能撑过
+     * 12 轮工具迭代，与工具图口径对齐；2 张图则可撑 60 轮。
      *
      * <p>必须有界：图片每轮重发，无界则单回合成本随轮数线性上涨——实测 2 张图跑 30 轮
      * = 60 张·次 ≈ 112.8k token，正是本类注释点名要防的场景。
      */
-    public static final int MAX_USER_TURN_DELIVERIES = 36;
+    public static final int MAX_USER_TURN_DELIVERIES = 120;
     /** 计数表容量上限——超过即清空，防长会话里自身泄漏。 */
     public static final int MAX_TRACKED_TURNS = 8;
 

@@ -339,6 +339,12 @@ public final class CodeTuiView extends InlineApp {
     // 击键才认出来——比每次重绘扫一遍文本划算得多。
     private String attachCacheText;
     private ImageAttachmentDetector.Result attachCache = ImageAttachmentDetector.Result.EMPTY;
+    // ── 图片占位符（[IMAGE1]）────────────────────────────────────────────
+    // 拖图时输入框只显示 [IMAGE1]（路径太长，贴几张就糊成一片），真实路径登记在这里，
+    // 识别与提交时展开还原。占位符是纯显示糖：删除到残缺（[IMAGE）就是普通文本，可预测。
+    private final Map<Integer, String> imagePlaceholders = new HashMap<>();
+    /** 下一个占位符编号；随草稿清空复位——每条消息都从 [IMAGE1] 重新计。 */
+    private int nextPlaceholderNo = 1;
 
     /** 斜杠命令（自动补全 + 分发）。 */
     private record SlashCommand(String name, String desc) {}
@@ -1566,21 +1572,27 @@ public final class CodeTuiView extends InlineApp {
 
         @Override
         public EventResult handlePasteEvent(PasteEvent event) {
-            // 终端拖图只插入路径，不保证与已有文字之间有空白。
-            // 仅对整段都是可识别图片路径的粘贴补边界，普通文本/代码原样交给编辑器。
+            // 终端拖图即粘贴，且不保证与已有文字之间有空白。整段粘贴全是可识别图片路径时
+            // 占位符化：文本只插 [IMAGE1]（路径太长，贴几张就糊成一片），真实路径进映射，
+            // 识别与提交时展开（见 attachments() / expandImagePlaceholders）。
+            // 多 token（Finder 多选拖多张）各占一个编号；普通文本/代码粘贴原样交给编辑器。
             String pasted = event.text();
+            List<String> tokens = ImageAttachmentDetector.tokenize(pasted);
             ImageAttachmentDetector.Result detected = imageDetector.detectWithOverflow(pasted, root);
             int imageCount = detected.images().size() + detected.overflow();
-            if (imageCount > 0 && imageCount == ImageAttachmentDetector.tokenize(pasted).size()) {
+            if (imageCount > 0 && imageCount == tokens.size()) {
+                StringBuilder ph = new StringBuilder();
+                for (String token : tokens) {
+                    if (ph.length() > 0) ph.append(' ');
+                    int no = nextPlaceholderNo++;
+                    imagePlaceholders.put(no, token);   // tokenize 产物已去转义，登记后可直接复用
+                    ph.append("[IMAGE").append(no).append(']');
+                }
                 String line = inputState.getLine(inputState.cursorRow());
                 int col = inputState.cursorCol();
-                boolean left = col > 0 && !Character.isWhitespace(line.charAt(col - 1))
-                        && !Character.isWhitespace(pasted.charAt(0));
-                boolean right = col < line.length() && !Character.isWhitespace(line.charAt(col))
-                        && !Character.isWhitespace(pasted.charAt(pasted.length() - 1));
-                if (left || right) {
-                    event = new PasteEvent((left ? " " : "") + pasted + (right ? " " : ""));
-                }
+                boolean left = col > 0 && !Character.isWhitespace(line.charAt(col - 1));
+                boolean right = col < line.length() && !Character.isWhitespace(line.charAt(col));
+                event = new PasteEvent((left ? " " : "") + ph + (right ? " " : ""));
             }
             EventResult r = inputKeys.handlePasteEvent(event);      // 多行粘贴
             publishLocalViewChange();   // 粘贴改文本：附件行/菜单结构可能变（本地状态，无 Agent 事件）
@@ -1719,12 +1731,44 @@ public final class CodeTuiView extends InlineApp {
 
     /** 当前输入文本里识别到的图片（按文本记忆，见 {@link #attachCacheText}）。 */
     private ImageAttachmentDetector.Result attachments() {
-        String text = inputState.text();
-        if (!text.equals(attachCacheText)) {
-            attachCache = imageDetector.detectWithOverflow(text, root);
-            attachCacheText = text;
+        // 占位符必须先展开再识别：文本里只有 [IMAGE1]，不展开附件行就永远认不出拖进来的图。
+        String expanded = expandImagePlaceholders(inputState.text(), imagePlaceholders);
+        if (!expanded.equals(attachCacheText)) {
+            attachCache = imageDetector.detectWithOverflow(expanded, root);
+            attachCacheText = expanded;
         }
         return attachCache;
+    }
+
+    /** 占位符词法：{@code [IMAGE1]}，编号十进制。残缺标记（[IMAGE、IMAGE1]）不匹配 → 当普通文本。 */
+    private static final java.util.regex.Pattern IMAGE_PLACEHOLDER =
+            java.util.regex.Pattern.compile("\\[IMAGE(\\d++)]");
+
+    /**
+     * 把输入文本里的占位符展开成登记的真实路径，<b>双引号包裹</b>。
+     *
+     * <p>为什么必须包引号：识别器按空白切词，裸路径里的空格（中文截图文件名几乎必带）会把
+     * 一条路径切碎成几个不存在的词；占位符后紧跟文字（{@code [IMAGE1]看}）还会把路径和文字
+     * 粘成同一个词。双引号是 {@code tokenize} 认的三种拖拽转义形态之一，引号内的空格与反斜杠
+     * 都原样保留——展开物要过识别器，包装就是展开层的职责。
+     *
+     * <p><b>只在识别层展开</b>：提交出去的正文保留 [IMAGE1] 原文（引用块附在后面，
+     * 模型按 name 对号），路径再长也不回正文——那是占位符存在的意义。
+     * 未登记的编号（映射已清空/用户手打）与残缺标记一律原样保留，最可预测。
+     */
+    static String expandImagePlaceholders(String text, Map<Integer, String> placeholders) {
+        if (text == null || text.isEmpty() || placeholders == null || placeholders.isEmpty()) {
+            return text;
+        }
+        java.util.regex.Matcher m = IMAGE_PLACEHOLDER.matcher(text);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {
+            String path = placeholders.get(Integer.parseInt(m.group(1), 10));
+            String rep = path != null ? "\"" + path + "\"" : m.group(0);
+            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(rep));
+        }
+        m.appendTail(out);
+        return out.toString();
     }
 
     /** 该画在输入框下方的那一行；空串=不画（也不占高度）。 */
@@ -2176,6 +2220,10 @@ public final class CodeTuiView extends InlineApp {
     private void clearInput() {
         inputState.clear();
         attachmentsCancelled = false;
+        // 占位符随草稿一起消亡：映射清空 + 编号复位——下一条消息又从 [IMAGE1] 重新计，
+        // 否则编号一路涨，[IMAGE5] 对不上一条消息里的任何东西。
+        imagePlaceholders.clear();
+        nextPlaceholderNo = 1;
     }
 
     /**
